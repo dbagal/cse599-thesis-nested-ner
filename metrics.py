@@ -3,17 +3,16 @@ from utils import *
 
 class Metrics:
 
-    def __init__(self, labels, predictions, n_decimals=4) -> None:
+    def __init__(self, n_decimals=4) -> None:
         '''  
         @params:
         - labels: (d,n,num_categories) dimensional vector of 1s and 0s
         - predictions: (d,n,num_categories) dimensional vector of 1s and 0s
         '''
         self.n_decimals = n_decimals
-        self.get_metrics(labels, predictions)
+    
 
-
-    def get_metrics(self, labels, predictions):
+    def set_metrics(self, labels, predictions):
         '''  
         @params:
         - labels: (d,n,num_categories) dimensional vector of 1s and 0s
@@ -34,10 +33,12 @@ class Metrics:
         num_categories = labels.shape[-1]
 
         for i in range(num_categories):
-            tp = torch.mul(labels[:,:,i].view(-1) == predictions[:,:,i].view(-1), predictions[:,:,i].view(-1)==1 ).sum().item()
-            tn = torch.mul(labels[:,:,i].view(-1) == predictions[:,:,i].view(-1), predictions[:,:,i].view(-1)==0 ).sum().item()
-            fp = torch.mul(labels[:,:,i].view(-1)==0, predictions[:,:,i].view(-1)==1).sum().item()
-            fn = torch.mul(labels[:,:,i].view(-1)==0, predictions[:,:,i].view(-1)==1).sum().item()
+            target = labels[:,:,i].view(-1)
+            preds = predictions[:,:,i].view(-1)
+            tp = torch.mul(target == preds, preds==1 ).sum().item()
+            tn = torch.mul(target == preds, preds==0 ).sum().item()
+            fp = torch.mul(target==0, preds==1).sum().item()
+            fn = torch.mul(target==0, preds==1).sum().item()
 
             self.true_positives += [tp]
             self.true_negatives += [tn]
@@ -54,6 +55,49 @@ class Metrics:
             self.f1_score += [f1_score] 
             
     
+    def update_metrics(self, labels, predictions):
+        '''  
+        @params:
+        - labels: (d,n,num_categories) dimensional vector of 1s and 0s
+        - predictions: (d,n,num_categories) dimensional vector of 1s and 0s
+        '''
+        labels = labels.contiguous()
+        predictions = predictions.contiguous()
+
+        assert(labels.shape[-1]==len(self.accuracy)), "Inconsistency in number of classes"
+
+        num_categories = labels.shape[-1]
+        
+        for i in range(num_categories):
+            target = labels[:,:,i].view(-1)
+            preds = predictions[:,:,i].view(-1)
+            tp = torch.mul(target == preds, preds==1).sum().item()
+            tn = torch.mul(target == preds, preds==0).sum().item()
+            fp = torch.mul(target==0, preds==1).sum().item()
+            fn = torch.mul(target==1, preds==0).sum().item()
+
+            self.true_positives[i] += tp
+            self.true_negatives[i] += tn
+            self.false_positives[i] += fp
+            self.false_negatives[i] += fn
+
+        self.precision = []
+        self.recall = []
+        self.accuracy = []
+        self.f1_score = []
+
+        for tp,tn,fp,fn in zip(self.true_positives, self.true_negatives, self.false_positives, self.false_negatives): 
+            precision = self.get_precision(tp, fp)
+            recall = self.get_recall(tp,fn)
+            acc = self.get_accuracy(tp, tn, fp, fn)
+            f1_score = self.get_f1_score(precision, recall)
+
+            self.precision += [precision]
+            self.recall += [recall]
+            self.accuracy += [acc]
+            self.f1_score += [f1_score] 
+
+
     def get_precision(self, tp, fp):
         return round(tp/(tp+fp), self.n_decimals)
 
@@ -100,39 +144,43 @@ class Metrics:
                 ) 
 
 
-labels = torch.tensor(
-    [
-        # sentence 1
+if __name__=="__main__":
+    labels = torch.tensor(
         [
-            [1,0,0,1,0], # word 1
-            [1,1,0,1,0], # word 2
-            [0,0,0,1,0]  # word 3
-        ],
-        # sentence 2
-        [
-            [0,0,0,1,1],
-            [1,0,1,1,0],
-            [0,1,0,1,0]
-        ]
-    ]
-)
+            # sentence 1
+            [
+                [1,0,0,1,0], # word 1
+                [1,1,0,1,0], # word 2
+                [0,0,0,1,0]  # word 3
+            ],
+            # sentence 2
+            [
+                [0,0,0,1,1],
+                [1,0,1,1,0],
+                [0,1,0,1,0]
+            ]
+        ] 
+    )
 
-preds = torch.tensor(
-    [
-        # sentence 1
+    preds = torch.tensor(
         [
-            [1,0,1,0,0], # word 1
-            [1,0,0,1,0], # word 2
-            [0,0,0,1,1]  # word 3
-        ],
-        # sentence 2
-        [
-            [1,0,0,1,1],
-            [1,1,0,0,0],
-            [0,1,1,1,0]
+            # sentence 1
+            [
+                [1,0,1,0,0], # word 1
+                [1,0,0,1,0], # word 2
+                [0,0,0,1,1]  # word 3
+            ],
+            # sentence 2
+            [
+                [1,0,0,1,1],
+                [1,1,0,0,0],
+                [0,1,1,1,0]
+            ]
         ]
-    ]
-)
+    )
 
-m = Metrics(labels, preds)
-print(m)
+    m = Metrics()
+    m.set_metrics(labels, preds)
+    print(m)
+    m.update_metrics(labels, preds)
+    print(m)
