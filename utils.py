@@ -1,3 +1,5 @@
+import enum
+from torch._C import Value
 from torch.utils import data
 
 
@@ -60,7 +62,11 @@ class PrettyPrint():
         
         table += f'{formatted_header}\n{"|"+"="*(table_width-2)+"|"}\n'
 
-        for i,data_row in enumerate(dataset):
+        partitions.sort()
+        partitions = [row_num -i for i,row_num in zip(range(0,len(partitions)), partitions)]
+        i=0
+        while i< len(dataset):
+            data_row = dataset[i]
             
             if i+1 not in partitions:
                 row = "|"+ " "*(col_guetter//2)
@@ -74,6 +80,9 @@ class PrettyPrint():
                 for col_len in column_lens:
                     row += "{}|"
                 table += row.format(*partition_row)+"\n"
+                partitions.remove(i+1)
+                i-=1
+            i+=1
 
         table += f'{"="*(table_width)}\n'
 
