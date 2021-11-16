@@ -144,14 +144,11 @@ class GENIADataset(Dataset):
         return self.inputs[idx], self.outputs[idx]
 
 
-
-def tokenizer(text):
-    word_pattern = re.compile(r'''([0-9]+|[-/,\[\]{}`~!@#$%\^&*()_\+=:;"'?<>])|(\.) |(\.$)|([a-z]'[a-z])| ''')
-    tokens = [token for token in word_pattern.split(text) if token]
-    return tokens
-
-
 if __name__=="__main":
+    def tokenizer(text):
+        word_pattern = re.compile(r'''([0-9]+|[-/,\[\]{}`~!@#$%\^&*()_\+=:;"'?<>])|(\.) |(\.$)|([a-z]'[a-z])| ''')
+        tokens = [token for token in word_pattern.split(text) if token]
+        return tokens
     #data_folder = "genia-dataset-processed/"
     data_folder = "/Users/dhavalbagal/Library/Mobile Documents/com~apple~CloudDocs/sbu/thesis/codebase/test"
     vocab_size = 20000

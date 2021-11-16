@@ -1,6 +1,9 @@
 from bs4 import BeautifulSoup
 from bs4.element import Tag
-import re, os, json
+from torch.utils.data import Dataset
+import re, os
+import json
+
 
 class GENIADatasetPreprocessor():
 
@@ -132,3 +135,20 @@ class GENIADatasetPreprocessor():
             self._prepare_xml(os.path.join(data_folder, xml_file), output_dir)
             #print(f"File '{xml_file}' processed!")
 
+
+if __name__=="__main__":
+
+    def tokenizer(text):
+        word_pattern = re.compile(r'''([0-9]+|[-/,\[\]{}`~!@#$%\^&*()_\+=:;"'?<>])|(\.) |(\.$)|([a-z]'[a-z])| ''')
+        tokens = [token for token in word_pattern.split(text) if token]
+        return tokens
+
+    xmlfile = '/content/cse599-thesis/data/GENIAcorpus3.02.xml'
+    data_folder = "/content/cse599-thesis/data/genia-dataset/"
+    output_dir = "/content/cse599-thesis/data/genia-dataset-processed/"
+    label_file = '/content/cse599-thesis/data/labels.txt'
+
+    loader = GENIADatasetPreprocessor(tokenizer, label_file)
+
+    loader.create_batches(xmlfile, 1, "/content/cse599-thesis/data/genia-dataset/")
+    loader.prepare_dataset(data_folder, output_dir)
