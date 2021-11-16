@@ -79,7 +79,7 @@ class Metrics:
                 self.true_negatives[i] += tn
                 self.false_positives[i] += fp
                 self.false_negatives[i] += fn
-                self.num_examples[i] = tp+tn+fp+fn
+                self.num_examples[i] += tp+tn+fp+fn
 
             self.precision = []
             self.recall = []
@@ -153,12 +153,12 @@ class Metrics:
             headers += [f"class_{i}"]
         
         dataset = [
-            ["tp"] + self.true_positives,
-            ["tn"] + self.true_negatives,
-            ["fp"] + self.false_positives,
-            ["fn"] + self.false_negatives,
+            ["true_positives"] + self.true_positives,
+            ["true_negatives"] + self.true_negatives,
+            ["false_positives"] + self.false_positives,
+            ["false_negatives"] + self.false_negatives,
             ["num_examples"] + self.num_examples,
-            ["acc"] + self.accuracy,
+            ["accuracy"] + self.accuracy,
             ["precision"] + self.precision,
             ["recall"] + self.recall,
             ["f1_score"] + self.f1_score
