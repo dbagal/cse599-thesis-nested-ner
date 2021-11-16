@@ -151,33 +151,33 @@ def tokenizer(text):
     return tokens
 
 
+if __name__=="__main":
+    #data_folder = "genia-dataset-processed/"
+    data_folder = "/Users/dhavalbagal/Library/Mobile Documents/com~apple~CloudDocs/sbu/thesis/codebase/test"
+    vocab_size = 20000
+    dataset_file = "/Users/dhavalbagal/Library/Mobile Documents/com~apple~CloudDocs/sbu/thesis/codebase/GENIAcorpus3.02.txt"
+    vocab_file_path = "/Users/dhavalbagal/Library/Mobile Documents/com~apple~CloudDocs/sbu/thesis/codebase/colab_supp_files/vocab.json"
 
-""" #data_folder = "genia-dataset-processed/"
-data_folder = "/Users/dhavalbagal/Library/Mobile Documents/com~apple~CloudDocs/sbu/thesis/codebase/test"
-vocab_size = 20000
-dataset_file = "/Users/dhavalbagal/Library/Mobile Documents/com~apple~CloudDocs/sbu/thesis/codebase/GENIAcorpus3.02.txt"
-vocab_file_path = "/Users/dhavalbagal/Library/Mobile Documents/com~apple~CloudDocs/sbu/thesis/codebase/colab_supp_files/vocab.json"
+    #output_dir = "genia-dataset-json/"
+    label_file = '/Users/dhavalbagal/Library/Mobile Documents/com~apple~CloudDocs/sbu/thesis/codebase/colab_supp_files/labels.txt'
+    #loader = GENIADatasetPreprocessor(tokenizer, label_file)
+    #loader.create_batches(xmlfile, 5, "/content/cse599-thesis/data/genia-dataset/")
+    #print(loader.label_to_idx)
+    #loader.prepare_dataset(data_folder, output_dir)
 
-#output_dir = "genia-dataset-json/"
-label_file = '/Users/dhavalbagal/Library/Mobile Documents/com~apple~CloudDocs/sbu/thesis/codebase/colab_supp_files/labels.txt'
-#loader = GENIADatasetPreprocessor(tokenizer, label_file)
-#loader.create_batches(xmlfile, 5, "/content/cse599-thesis/data/genia-dataset/")
-#print(loader.label_to_idx)
-#loader.prepare_dataset(data_folder, output_dir)
+    ## Building vocabulary from a single .txt file
+    #vocab = Vocab(vocab_size=vocab_size, tokenizer=tokenizer)
+    #vocab.buildFromFile(dataset_file)
+    #vocab.save(vocab_file_path)
 
-## Building vocabulary from a single .txt file
-#vocab = Vocab(vocab_size=vocab_size, tokenizer=tokenizer)
-#vocab.buildFromFile(dataset_file)
-#vocab.save(vocab_file_path)
+    ## Loading the vocabulary
+    vocab  = Vocab()
+    vocab.load(vocab_file_path)
 
-## Loading the vocabulary
-vocab  = Vocab()
-vocab.load(vocab_file_path)
+    loader = GENIADataset(tokenizer, vocab, label_file, data_folder)
+    #print(len(loader[0]))
 
-loader = GENIADataset(tokenizer, vocab, label_file, data_folder)
-#print(len(loader[0]))
+    #for k,v in loader.bio_label_to_idx.items():
+    #    print(f"{v}: {k}") 
 
-#for k,v in loader.bio_label_to_idx.items():
-#    print(f"{v}: {k}") 
-
-print({v:k for k,v in loader.bio_label_to_idx.items()}) """
+    print({v:k for k,v in loader.bio_label_to_idx.items()})

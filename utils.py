@@ -1,9 +1,12 @@
+from torch.utils import data
+
+
 class PrettyPrint():
 
     @staticmethod
     def get_tabular_formatted_string(dataset, headers, include_serial_numbers = True,
                                 col_guetter = 4, serial_num_heading = "Sr.No", 
-                                table_header=None):
+                                table_header=None, partitions=None):
         class InconsistentDataAndHeaderError(Exception):
             def __init__(self):
                 msg = f"Inconsistency in number of columns and number of headers!"
@@ -57,13 +60,23 @@ class PrettyPrint():
         
         table += f'{formatted_header}\n{"|"+"="*(table_width-2)+"|"}\n'
 
-        for data_row in dataset:
-            row = "|"+ " "*(col_guetter//2)
-            for col_len in column_lens:
-                row += "{:<"+str(col_len+col_guetter//2)+"}|" + " "*(col_guetter//2)
-            table += row.format(*data_row)+"\n"
+        for i,data_row in enumerate(dataset):
+            
+            if i+1 not in partitions:
+                row = "|"+ " "*(col_guetter//2)
+                for col_len in column_lens:
+                    row += "{:<"+str(col_len+col_guetter//2)+"}|" + " "*(col_guetter//2)
+
+                table += row.format(*data_row)+"\n"
+            else:
+                row = "|"
+                partition_row = ["-"*(col_len+2*(col_guetter//2)) for col_len in column_lens]
+                for col_len in column_lens:
+                    row += "{}|"
+                table += row.format(*partition_row)+"\n"
 
         table += f'{"="*(table_width)}\n'
+
         return table
 
 
