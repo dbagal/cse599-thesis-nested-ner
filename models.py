@@ -1,4 +1,4 @@
-from typing import ForwardRef
+from reformer_pytorch import Reformer
 import torch
 import torch.nn as nn
 
@@ -109,10 +109,69 @@ class ReformerEncoder(nn.Module):
         return unified_attn
 
 
-class GENIAReformer(nn.Module):
+class TransformerEncoder(nn.Module):
+    
+    def __init__(self, dmodel, dq, dk, dv, heads, feedforward):
+        super(TransformerEncoder, self).__init__()
+
+        self.dmodel, self.dq, self.dk, self.dv = dmodel, dq, dk, dv
+        self.heads = heads
+        self.feedforward = feedforward
+
+        self.Wq = nn.Linear(self.dmodel, self.heads*self.dq)
+        self.Wk = nn.Linear(self.dmodel, self.heads*self.dk)
+        self.Wv = nn.Linear(self.dmodel, self.heads*self.dv)
+        self.unify = nn.Linear(self.heads*self.dv, self.dmodel)
+
+        # Normalization
+        self.norm1 = nn.LayerNorm(self.dmodel)
+
+        # Feedforward
+        self.ff = nn.Sequential(
+                        nn.Linear(self.dmodel, self.feedforward),
+                        nn.ReLU(),
+                        nn.Linear(self.feedforward, self.dmodel)) 
+
+        # Normalization
+        self.norm2 = nn.LayerNorm(self.dmodel)
+
+
+    def forward(self, x):
+        """  
+        @ params 
+        - x => input torch tensor (d,n,dmodel)
+        """
+
+        attn = self.attention(x)
+        norm1 = self.norm1(x + attn)
+        feedfwd = self.ff(norm1)
+        y = self.norm2(norm1 + feedfwd)
+
+        return y
+
+
+    def attention(self, x):
+        """  
+        @ params 
+        - x => input torch tensor (d,n,dmodel)
+        """
+
+        queries = self.Wq(x)  # (d,n,h*dqk)
+        keys = self.Wk(x)  # (d,n,h*dqk)
+        values = self.Wv(x)  # (d,n,h*dv)
+
+        scores = torch.bmm(queries, keys.transpose(1,2))/self.dk**0.5  # (d,n,n)
+
+        attn = torch.bmm(scores, values)  # (d,n,h*dv)
+        unified_attn = self.unify(attn)  # (d,n,dmodel)
+
+        return unified_attn
+
+
+class GENIAReformer2(nn.Module):
     
     def __init__(self, dmodel, dqk, dv, heads, feedforward, vocab_size, num_buckets=32, num_bio_labels=77, device="cuda"):
-        super(GENIAReformer, self).__init__()
+        super(GENIAReformer2, self).__init__()
 
         self.dmodel, self.dqk, self.dv, self.heads, self.feedforward = dmodel, dqk, dv, heads, feedforward
         self.num_buckets = num_buckets
@@ -121,6 +180,101 @@ class GENIAReformer(nn.Module):
 
         self.embedding = nn.Embedding(self.vocab_size, self.dmodel).to(self.device)
         self.reformer_encoder = ReformerEncoder(dmodel,dqk,dv,heads,feedforward,num_buckets).to(self.device)
+        
+        # Feedforward
+        self.ff = nn.Sequential(
+                        nn.Linear(self.dmodel, self.dmodel//2),
+                        nn.ReLU(),
+                        nn.Linear(self.dmodel//2, num_bio_labels),
+                        nn.ReLU(),).to(self.device) 
+
+        # Normalization
+        self.norm = nn.LayerNorm(num_bio_labels).to(self.device)
+    
+
+    def forward(self, input_indices):
+        """  
+        @ params 
+        - input_indices => input torch tensor (d,n)
+        """
+        UNK_IDX = 1
+        d,n = input_indices.shape
+
+        # Replace OOV word indices with the UNK index
+        input_indices[input_indices>=self.vocab_size] = UNK_IDX
+        
+        # Convert the input indices into embeddings
+        x = self.embedding(input_indices) + positionEncoding(d,n,self.dmodel, self.device)  # (d,n,dmodel)
+        x = self.reformer_encoder(x)
+        x = self.ff(x)
+        #x = self.norm(x)
+        x = torch.sigmoid(x)
+
+        return x
+
+
+
+class GENIAReformer(nn.Module):
+    
+    def __init__(self, dmodel, depth, heads, vocab_size, num_buckets=32, num_bio_labels=77, device="cuda"):
+        super(GENIAReformer, self).__init__()
+
+        self.dmodel, self.heads = dmodel, heads
+        self.num_buckets = num_buckets
+        self.vocab_size = vocab_size
+        self.device = device
+
+        self.embedding = nn.Embedding(self.vocab_size, self.dmodel).to(self.device)
+        self.reformer_encoder = Reformer(
+            dim = dmodel,
+            depth = depth,
+            heads = heads,
+            n_hashes=num_buckets
+        ).to(self.device)
+
+        # Feedforward
+        self.ff = nn.Sequential(
+                        nn.Linear(self.dmodel, self.dmodel//2),
+                        nn.ReLU(),
+                        nn.Linear(self.dmodel//2, num_bio_labels),
+                        nn.ReLU(),).to(self.device) 
+
+        # Normalization
+        self.norm = nn.LayerNorm(num_bio_labels).to(self.device)
+    
+
+    def forward(self, input_indices):
+        """  
+        @ params 
+        - input_indices => input torch tensor (d,n)
+        """
+        UNK_IDX = 1
+        d,n = input_indices.shape
+
+        # Replace OOV word indices with the UNK index
+        input_indices[input_indices>=self.vocab_size] = UNK_IDX
+        
+        # Convert the input indices into embeddings
+        x = self.embedding(input_indices) + positionEncoding(d,n,self.dmodel, self.device)  # (d,n,dmodel)
+        x = self.reformer_encoder(x)
+        x = self.ff(x)
+        #x = self.norm(x)
+        x = torch.sigmoid(x)
+
+        return x
+
+
+class GENIATransformer(nn.Module):
+    
+    def __init__(self, dmodel, dq, dk, dv, heads, feedforward, vocab_size, num_bio_labels=77, device="cuda"):
+        super(GENIATransformer, self).__init__()
+
+        self.dmodel, self.dq, self.dk, self.dv, self.heads, self.feedforward = dmodel, dq, dk, dv, heads, feedforward
+        self.vocab_size = vocab_size
+        self.device = device
+
+        self.embedding = nn.Embedding(self.vocab_size, self.dmodel).to(self.device)
+        self.transformer_enocder = TransformerEncoder(dmodel,dq, dk, dv,heads,feedforward).to(self.device)
         
         # Feedforward
         self.ff = nn.Sequential(
@@ -145,7 +299,7 @@ class GENIAReformer(nn.Module):
         
         # Convert the input indices into embeddings
         x = self.embedding(input_indices) + positionEncoding(d,n,self.dmodel, self.device)  # (d,n,dmodel)
-        x = self.reformer_encoder(x)
+        x = self.transformer_enocder(x)
         x = self.ff(x)
         x = self.norm(x)
         x = torch.sigmoid(x)

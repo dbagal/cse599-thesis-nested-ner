@@ -3,12 +3,13 @@ from utils import *
 
 class Metrics:
 
-    def __init__(self, n_decimals=4) -> None:
+    def __init__(self, class_names, n_decimals=4) -> None:
         '''  
         @params:
         - labels: (d,n,num_categories) dimensional vector of 1s and 0s
         - predictions: (d,n,num_categories) dimensional vector of 1s and 0s
         '''
+        self.class_names = class_names
         self.n_decimals = n_decimals
     
 
@@ -48,12 +49,25 @@ class Metrics:
             self.accuracy += [acc]
             self.f1_score += [f1_score] 
 
+
     class InconsistentClassesError(Exception):
         def __init__(self, old_num_classes, new_num_classes) -> None:
             msg = f"Inconsistent number of classes: {old_num_classes}, {new_num_classes}"
             super().__init__(msg)
 
-    
+
+    def reset_metrics(self):
+        delattr(self, 'true_positives')
+        delattr(self, 'true_negatives')
+        delattr(self, 'false_positives')
+        delattr(self, 'false_negatives')
+        delattr(self, 'num_examples')
+        delattr(self, 'accuracy')
+        delattr(self, 'precision')
+        delattr(self, 'recall')
+        delattr(self, 'f1_score')
+
+
     def update_metrics(self, labels, predictions):
         '''  
         @params:
@@ -146,11 +160,7 @@ class Metrics:
     
     def __str__(self) -> str:
         
-        num_categories = len(self.accuracy)
-
-        headers = ['metric',]
-        for i in range(num_categories):
-            headers += [f"class_{i}"]
+        headers = ['metric',] + self.class_names
         
         dataset = [
             ["true_positives"] + self.true_positives,
@@ -208,7 +218,7 @@ if __name__=="__main__":
         ]
     )
 
-    m = Metrics()
+    m = Metrics(class_names=['a','b','c','d','e'])
     m.update_metrics(labels, preds)
     print(m)
     m.update_metrics(labels, preds)

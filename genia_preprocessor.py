@@ -1,6 +1,5 @@
 from bs4 import BeautifulSoup
 from bs4.element import Tag
-from torch.utils.data import Dataset
 import re, os
 import json
 
@@ -10,6 +9,7 @@ class GENIADatasetPreprocessor():
     def __init__(self, tokenizer:object, label_file) -> None:
         
         self.tokenizer = tokenizer
+
         with open(label_file, "r") as fp:
             labels = fp.readlines()
 
@@ -17,7 +17,7 @@ class GENIADatasetPreprocessor():
 
 
     def create_batches(self, xml_file, batch_size, output_dir):
-        xml = '<?xml version="1.0" encoding="UTF-8"?>\n<?xml-stylesheet type="text/css" href="gpml.css" ?>\n<!DOCTYPE set SYSTEM "gpml.dtd">\n<set>\n<import resource="GENIAontology.daml" prefix="G"></import>\n'
+        xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
 
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
@@ -29,7 +29,7 @@ class GENIADatasetPreprocessor():
         abstracts = bs_xml.find_all("abstract")
 
         xml_name = xml_file.split("/")[-1].strip(".xml")
-
+        
         for i in range(0, len(abstracts), batch_size):
             data_file_name = os.path.join(output_dir, xml_name+"#"+str(i)+"-"+str(i+batch_size-1)+".xml")
             with open(data_file_name, "w") as fp:
