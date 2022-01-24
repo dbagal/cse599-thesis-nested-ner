@@ -2,6 +2,8 @@
 Installation:
 pip3 install beautifulsoup4==4.10.0
 pip3 install lxml==4.7.1
+pip3 install tqdm
+pip3 install numpy
 """
 
 from bs4 import BeautifulSoup
@@ -27,14 +29,6 @@ class GENIAPreprocessor:
         self.semantic_categories.update({0:"outside", "outside":0})
 
         num_labels = len(self.semantic_categories)//2
-
-        self.bio_label_indices = {"outside": self.semantic_categories["outside"],}
-        c = 1
-        for i in range(1, num_labels):
-            self.bio_label_indices[f"b-{i}"] = c
-            self.bio_label_indices[f"i-{i}"] = c + 1
-            c += 2
-        self.bio_label_indices.update({v:k for k,v in self.bio_label_indices.items()})
         
     
     def __process_cons_element(self, cons_elem, coordinated_category = None, parent_categories=set()):
@@ -148,68 +142,6 @@ class GENIAPreprocessor:
         return chunks, categories
                   
 
-    def bio_labels(self, labels):
-        """  
-        @params:
-        - labels => 3D list containing multi-category labels for every token in every sentence
-                    [
-                        [
-                            [0,], [28,7], [74,14]
-                        ],
-                        [
-                            ...
-                        ]
-                    ]
-        """
-
-        # number of semantic categories including "outside" label
-        num_labels = len(self.semantic_categories)//2
-        
-        bio_labels = []
-
-        # for each semantic category, we maintain information about the category if it was encountered in the previous token
-        # this is required to make a decision on B, I, O tags
-        previously_present = {i:False for i in range(1, num_labels)}
-
-        # maintain a list of indices of all semantic categories excluding "outside"
-        all_category_indices = set(range(1,num_labels))
-
-        for sent_labels in tqdm(labels):
-            bio_sent_labels = []
-
-            # for every new sentence reset the previously_present meta-data
-            previously_present = {i:False for i in range(1, num_labels)}
-
-            for token_labels in sent_labels:
-                bio_token_labels = []
-
-                for category_idx in token_labels:
-                    # if category index was absent for previous token, then assign that category a 'B' tag
-                    if category_idx!=0 and previously_present[category_idx] == False:
-                        bio_token_labels += [self.bio_label_indices[f"b-{category_idx}"]]
-                        previously_present[category_idx] = True
-
-                    # if category index was present for previous token, then assign that category an 'I' tag
-                    elif category_idx!=0 and previously_present[category_idx] == True:
-                        bio_token_labels += [self.bio_label_indices[f"i-{category_idx}"]]
-                        previously_present[category_idx] = True
-
-                    elif category_idx == 0:
-                        bio_token_labels += [0]
-
-                # for categories which are absent for this token, 
-                # set their previously_present values to False
-                absent_category_indices = all_category_indices.difference(set(token_labels))
-                for category_idx in absent_category_indices:
-                    previously_present[category_idx] = False
-
-                bio_sent_labels += [bio_token_labels]
-
-            bio_labels += [bio_sent_labels]
-        
-        return bio_labels
-
-
     def load(self, xml_file, tokenizer, output_dir=""):
         
         with open(xml_file, "r") as fp:
@@ -242,25 +174,10 @@ class GENIAPreprocessor:
             input_data[i] = sent_tokens
             target_labels[i] = token_indices
 
-        print("\nConverting category labels according to BIO scheme ...")
-        bio_labels = self.bio_labels(target_labels)
-        
-        bio_label_indices = dict()
-        for k,v in self.bio_label_indices.items():
-            
-            if type(k)==str and k.startswith("b-"):
-                bio_label_indices[v] = "b-"+self.semantic_categories[int(k.lstrip("b-"))]
-            elif type(k)==str and k.startswith("i-"):
-                bio_label_indices[v] = "i-"+self.semantic_categories[int(k.lstrip("i-"))]
-            elif k=="outside":
-                bio_label_indices[v] = k
-        bio_label_indices.update({v:k for k,v in bio_label_indices.items()})
-
         json_data = {
             "categories":self.semantic_categories,
-            "bio-categories": bio_label_indices,
             "input-data": input_data,
-            "target-labels": bio_labels
+            "target-labels": target_labels
         }
 
         xml_name = xml_file.split("/")[-1].rstrip(".xml")
@@ -310,8 +227,7 @@ class GENIADataset(Dataset):
             sent_token_indices = [self.vocab.word_to_idx.get(token, self.UNK_IDX) for token in sent]
             input_data.append(sent_token_indices)
 
-        self.output_vector_len = len(json_dataset["bio-categories"].keys())//2 # 77
-        self.bio_categories = json_dataset["bio-categories"]
+        self.output_vector_len = len(json_dataset["categories"].keys())//2 # 77
 
         # convert target labels into one hot vectors
         self.input_data, self.target_labels = self.pad(
@@ -373,24 +289,18 @@ class GENIADataset(Dataset):
         return self.input_data[idx], self.target_labels[idx]
 
 
-if __name__=="__main":
+if __name__=="__main__":
     
     def tokenizer(text):
         word_pattern = re.compile(r'''([0-9]+|[-/,\[\]{}`~!@#$%\^&*()_\+=:;"'?<>])|(\.) |(\.$)|([a-z]'[a-z])| ''')
         tokens = [token for token in word_pattern.split(text) if token]
         return tokens
         
-    data_folder = "/Users/dhavalbagal/Library/Mobile Documents/com~apple~CloudDocs/sbu/thesis/codebase/test"
+    data_folder = "/Users/dhavalbagal/Documents/GitHub/cse599-thesis-nested-ner/genia-dataset"
     vocab_size = 20000
-    dataset_file = "/Users/dhavalbagal/Library/Mobile Documents/com~apple~CloudDocs/sbu/thesis/codebase/GENIAcorpus3.02.txt"
-    vocab_file_path = "/Users/dhavalbagal/Library/Mobile Documents/com~apple~CloudDocs/sbu/thesis/codebase/colab_supp_files/vocab.json"
-
-    #output_dir = "genia-dataset-json/"
-    label_file = '/Users/dhavalbagal/Library/Mobile Documents/com~apple~CloudDocs/sbu/thesis/codebase/colab_supp_files/labels.txt'
-    #loader = GENIADatasetPreprocessor(tokenizer, label_file)
-    #loader.create_batches(xmlfile, 5, "/content/cse599-thesis/data/genia-dataset/")
-    #print(loader.label_to_idx)
-    #loader.prepare_dataset(data_folder, output_dir)
+    dataset_file = "/Users/dhavalbagal/Documents/GitHub/cse599-thesis-nested-ner/genia-dataset/GENIAcorpus3.02.xml"
+    vocab_file_path = "/Users/dhavalbagal/Documents/GitHub/cse599-thesis-nested-ner/vocab.json"
+    semantic_categories = "/Users/dhavalbagal/Documents/GitHub/cse599-thesis-nested-ner/semantic-categories.txt"
 
     ## Building vocabulary from a single .txt file
     #vocab = Vocab(vocab_size=vocab_size, tokenizer=tokenizer)
@@ -401,5 +311,7 @@ if __name__=="__main":
     vocab  = Vocab()
     vocab.load(vocab_file_path)
 
-    loader = GENIADataset(tokenizer, vocab, label_file, data_folder)
-    #print(len(loader[0]))
+    loader = GENIADataset(tokenizer, vocab, semantic_categories, data_folder)
+    print(len(loader), len(loader[0]))
+    x,y = loader[0]
+    print(x.shape, y.shape)

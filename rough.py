@@ -1,36 +1,13 @@
 import torch
+from torch.nn import functional as f
 
-def sort_categories(data, top_k):
-    """  
-    @params:
-    - data: (d,n,num_categories)
-    """
-    sums = []
-    num_categories = data.shape[-1]
+a = [
+    [
+        [0,0,1,2,3,4,5,0,0]
+    ]
+]
+a = torch.tensor(a)
+print(a.shape) # 1,1,9
 
-    for i in range(num_categories):
-        sums += [torch.sum(data[:,:,i])]
-
-    sums = torch.tensor(sums)
-    indices = torch.sort(sums, descending=True).indices
-
-    return data[:,:,indices[:top_k]]
-
-labels = torch.tensor(
-        [
-            # sentence 1
-            [
-                [1,0,0,1,0], # word 1
-                [1,1,0,1,0], # word 2
-                [0,0,0,1,0]  # word 3
-            ],
-            # sentence 2
-            [
-                [0,0,0,1,1],
-                [1,0,1,1,0],
-                [0,1,0,1,0]
-            ]
-        ] 
-    )
-
-print(sort_categories(labels, 2))
+b = f.unfold(a.view(1,*a.shape), kernel_size=(5,1))
+print(b)
