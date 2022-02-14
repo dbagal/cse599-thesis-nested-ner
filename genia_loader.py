@@ -13,6 +13,10 @@ import json
 from tqdm import tqdm  
 from torch.utils.data import Dataset
 import json, os, re
+<<<<<<< Updated upstream
+=======
+from model.tokenizer import Tokenizer
+>>>>>>> Stashed changes
 from vocab import Vocab
 import torch
 
@@ -227,7 +231,12 @@ class GENIADataset(Dataset):
             sent_token_indices = [self.vocab.word_to_idx.get(token, self.UNK_IDX) for token in sent]
             input_data.append(sent_token_indices)
 
+<<<<<<< Updated upstream
         self.output_vector_len = len(json_dataset["categories"].keys())//2 # 77
+=======
+        self.output_vector_len = len(json_dataset["bio-categories"].keys())//2 # 75
+        self.bio_categories = json_dataset["bio-categories"]
+>>>>>>> Stashed changes
 
         # convert target labels into one hot vectors
         self.input_data, self.target_labels = self.pad(
@@ -311,7 +320,14 @@ if __name__=="__main__":
     vocab  = Vocab()
     vocab.load(vocab_file_path)
 
+<<<<<<< Updated upstream
     loader = GENIADataset(tokenizer, vocab, semantic_categories, data_folder)
     print(len(loader), len(loader[0]))
     x,y = loader[0]
     print(x.shape, y.shape)
+=======
+    loader = GENIADataset(tokenizer, semantic_categories, data_folder)
+    print(len(loader), len(loader[0]))
+    x,y = loader[0]
+    print(x.shape, y.shape)
+>>>>>>> Stashed changes
