@@ -1,14 +1,9 @@
 import torch
-from utils import *
+from model.utils import *
 
 class Metrics:
 
     def __init__(self, class_names, n_decimals=4) -> None:
-        '''  
-        @params:
-        - labels: (d,n,num_categories) dimensional vector of 1s and 0s
-        - predictions: (d,n,num_categories) dimensional vector of 1s and 0s
-        '''
         self.class_names = class_names
         self.n_decimals = n_decimals
     

@@ -1,9 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as f
+import torch.optim as optim
 from transformers import BertModel
 from transformers import logging
 logging.set_verbosity_error()
+from tqdm import tqdm
+from metrics import Metrics
 
 
 class GENIAModel(nn.Module):
@@ -46,6 +49,8 @@ class GENIAModel(nn.Module):
             nn.Linear(768, num_categories),
             nn.LayerNorm(num_categories)
         )
+
+        self.metrics = Metrics([])
 
 
     def forward(self, input_ids):
@@ -129,7 +134,66 @@ class GENIAModel(nn.Module):
 
         return ctxt_vec
 
+
+    def test(self, test_loader):
+        for step, (input_ids, target_labels) in enumerate(test_loader):
+
+            input_ids = input_ids.to(self.device)
+            target_labels = target_labels.to(self.device)
+
+            probs = self(input_ids)
+
+            thresholds = self.metrics.get_optimal_threshold(target_labels, probs)
+            metrics, metric_table = self.metrics.calc_metrics(target_labels, probs, thresholds)
+
  
+    def train(self, train_loader, loss_fn,  num_epochs=10, lr=0.01):
+        optimizer = optim.Adam(self.parameters(), lr=lr)
+
+        progress_bar = tqdm(range(num_epochs), position=0, leave=True)
+
+        recorded_e_loss = 0.0
+        num_batches = len(train_loader)
+
+        for epoch in progress_bar:
+            progress_bar.set_description(f"epoch: {epoch} ")
+            epoch_loss = 0.0
+
+            for step, (input_ids, target_labels) in enumerate(train_loader):
+
+                input_ids = input_ids.to(self.device)
+                target_labels = target_labels.to(self.device)
+
+                optimizer.zero_grad()
+
+                probs = self(input_ids)
+
+                batch_loss = loss_fn(probs, target_labels)
+                batch_loss.backward()
+
+                optimizer.step()
+
+                epoch_loss += batch_loss.detach().item()
+
+                progress_bar.set_postfix(
+                    {
+                        "batch":step,
+                        "batch-loss": str(batch_loss.detach().item()),
+                        "epoch-loss": str(recorded_e_loss)
+                    }
+                )
+
+            recorded_e_loss = round(epoch_loss/num_batches, 8)
+            progress_bar.set_postfix(
+                {
+                    "batch":step,
+                    "batch-loss": str(batch_loss.detach().item()),
+                    "epoch-loss": str(recorded_e_loss)
+                }
+            )
+
+
+
 if __name__ == "__main__":
     m = GENIAModel()
     d,n = 13,32
