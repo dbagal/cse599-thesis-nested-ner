@@ -7,7 +7,6 @@ pip3 install lxml==4.7.1
 from bs4 import BeautifulSoup
 import bs4
 import re, os
-import json
 from tqdm import tqdm  
 from torch.utils.data import Dataset
 import json, os, re
@@ -61,8 +60,8 @@ class GENIALoader(Dataset):
         self.input_ids = torch.LongTensor(input_ids)
         self.target_labels = torch.FloatTensor(target_labels)
 
-        print(self.input_ids.shape)
-        print(self.target_labels.shape)
+        #print(self.input_ids.shape)
+        #print(self.target_labels.shape)
          
     
     def __process_cons_element(self, cons_elem, coordinated_category = None, parent_categories=set()):
@@ -339,9 +338,17 @@ class GENIALoader(Dataset):
         return input_ids, bio_labels
 
 
+    def __len__(self):
+        return self.target_labels.shape[0]
+
+
+    def __getitem__(self, idx):
+        return self.input_ids[idx], self.target_labels[idx]
+
+
 if __name__ == "__main__":
 
     tokenizer = BERTTokenizer()
     semantic_categories_file = "/Users/dhavalbagal/Documents/GitHub/cse599-thesis-nested-ner/semantic-categories.txt"
-    data_folder = "/Users/dhavalbagal/Documents/GitHub/cse599-thesis-nested-ner/genia-dataset/test"
+    data_folder = "/Users/dhavalbagal/Documents/GitHub/cse599-thesis-nested-ner/genia-dataset"
     d = GENIALoader(tokenizer, semantic_categories_file, data_folder)

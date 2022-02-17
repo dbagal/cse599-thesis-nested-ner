@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as f
+from transformers import BertModel
 
 
 def positionEncoding(d,n,dmodel, device="cpu"):
@@ -124,10 +125,15 @@ class GENIATransformer(nn.Module):
 
 class GENIAModel(nn.Module):
 
-    def __init__(self, num_categories=38, category_window_size=5) -> None:
+    def __init__(self, dmodel=512, num_categories=75, category_window_size=5) -> None:
         super(GENIAModel, self).__init__()
 
         assert(category_window_size%2 != 0), "category_window_size must be an odd number"
+
+        self.bert_engine = BertModel.from_pretrained("bert-base-uncased")
+        self.engine_fc_1 = nn.Linear(768, num_categories)
+
+        self.category_embeddings = nn.Embedding(num_categories, dmodel)
 
         self.category_wnd_size = category_window_size
         self.conv1 = nn.Conv2d(
@@ -136,8 +142,21 @@ class GENIAModel(nn.Module):
             kernel_size=(category_window_size, 1)
         )
 
+
+    def forward(self, input_ids):
+        """  
+        @params:
+        - input_ids =>  indices of words in the input sequences (d,n)
+        """
+        state = self.bert_engine(input_ids = input_ids) # (d,n,768)
+        state = self.engine_fc_1(state)                 # (d,n,num_categories)
+
+        probs = torch.sigmoid(state)                    # (d,n,num_categories)
+
+
+
     
-    def forward(self, embeddings, target_labels):
+    def forward2(self, embeddings, target_labels):
         """  
         @params:
         - embeddings    =>  pytorch tensor of dimension (d,n,dmodel)
@@ -145,6 +164,8 @@ class GENIAModel(nn.Module):
         """
 
         d,n,dmodel = embeddings.shape
+
+
 
         surround = self.category_wnd_size//2
 

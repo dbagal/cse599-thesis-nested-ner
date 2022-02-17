@@ -320,14 +320,7 @@ if __name__=="__main__":
     vocab  = Vocab()
     vocab.load(vocab_file_path)
 
-<<<<<<< Updated upstream
-    loader = GENIADataset(tokenizer, vocab, semantic_categories, data_folder)
-    print(len(loader), len(loader[0]))
-    x,y = loader[0]
-    print(x.shape, y.shape)
-=======
     loader = GENIADataset(tokenizer, semantic_categories, data_folder)
     print(len(loader), len(loader[0]))
     x,y = loader[0]
     print(x.shape, y.shape)
->>>>>>> Stashed changes
