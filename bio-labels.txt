@@ -73,5 +73,3 @@ B_other_artificial_source
 I_other_artificial_source
 B_other_name
 I_other_name
-B_coordinated
-I_coordinated

@@ -9,13 +9,13 @@ import bs4
 import re, os
 from tqdm import tqdm  
 from torch.utils.data import Dataset
-import json, os, re
+import os, re
 import torch
 
 from bert_tokenizer import BERTTokenizer
 
 
-class GENIALoader(Dataset):
+class GENIADataset(Dataset):
 
     def __init__(self, tokenizer:BERTTokenizer, semantic_categories_file, data_folder, max_seq_len = 256) -> None:
         """
@@ -351,4 +351,4 @@ if __name__ == "__main__":
     tokenizer = BERTTokenizer()
     semantic_categories_file = "/Users/dhavalbagal/Documents/GitHub/cse599-thesis-nested-ner/semantic-categories.txt"
     data_folder = "/Users/dhavalbagal/Documents/GitHub/cse599-thesis-nested-ner/genia-dataset"
-    d = GENIALoader(tokenizer, semantic_categories_file, data_folder)
+    d = GENIADataset(tokenizer, semantic_categories_file, data_folder)

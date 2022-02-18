@@ -1,5 +1,9 @@
+# pytorch-ignite == 0.4.8
+
+import collections
 import torch
 from utils import *
+
 
 class Metrics:
 
@@ -8,63 +12,47 @@ class Metrics:
         self.n_decimals = n_decimals
 
 
-    def calc_metrics(self, true_labels, predictions, thresholds):
+    def calc_metrics(self, y, y_pred, thresholds):
         '''  
         @params:
-        - true_labels: (d,n,num_categories) dimensional vector of 1s and 0s
-        - predictions: (d,n,num_categories) dimensional probability vector
+        - y: (d,n,num_categories) dimensional vector of 1s and 0s
+        - y_pred: (d,n,num_categories) dimensional probability vector
         '''
-        
-        num_categories = true_labels.shape[-1]
+        y_pred[y_pred > thresholds] = 1
+        y_pred[y_pred <= thresholds] = 0
 
-        true_positives, true_negatives, false_positives, false_negatives = [],[],[],[]
-        num_examples, specificities, precisions, recalls, f1_scores = [], [], [], [], []
+        tp, fp, tn, fn = self.get_cm_elements(y_pred, y) # (nc,)
 
-        for i in range(num_categories):
-            predictions[predictions > thresholds[i]] = 1.0
-            predictions[predictions <= thresholds[i]] = 0.0
+        num_examples = tp+tn+fp+fn
 
-            tp, tn, fp, fn = self.get_positives_and_negatives(true_labels[:,:,i], predictions[:,:,i])
-            n = tp+tn+fp+fn
-            precision = self.get_precision(tp, fp)
-            recall = self.get_recall(tp, fn)
-            specificity = self.get_specificity(fp, tn)
-            f1_score = self.get_f1_score(precision, recall)
+        precision = tp/(tp+fp)
+        precision = precision.nan_to_num()
+        precision[precision==torch.inf] = 0
 
-            true_positives.append(tp)
-            true_negatives.append(tn)
-            false_positives.append(fp)
-            false_negatives.append(fn)
-            num_examples.append(n)
-            precisions.append(precision)
-            recalls.append(recall)
-            specificities.append(specificity)
-            f1_scores.append(f1_score)
+        recall = tp/(tp+fn)
+        recall = recall.nan_to_num()
+        recall[recall==torch.inf] = 0
+
+        specificity = tn/(tn+fp)
+        f1_score = 2 / ((1/precision) + (1/recall))
+
+        round_tensor = lambda tensor: [round(x, self.n_decimals) for x in tensor.tolist()]
+
+        metrics = collections.OrderedDict({
+            "true-positives": tp.tolist(),
+            "true-negatives":tn.tolist(),
+            "false-positives":fp.tolist(),
+            "false-negatives":fn.tolist(),
+            "num-examples":num_examples.tolist(),
+            "specificity": round_tensor(specificity),
+            "precision": round_tensor(precision),
+            "recall": round_tensor(recall),
+            "f1-score": round_tensor(f1_score)
+        })
 
         headers = ['metric',] + self.class_names
-        
-        dataset = [
-            ["true_positives"] + true_positives,
-            ["true_negatives"] + true_negatives,
-            ["false_positives"] + false_positives,
-            ["false_negatives"] + false_negatives,
-            ["num_examples"] + num_examples,
-            ["precision"] + precisions,
-            ["recall"] + recalls,
-            ["f1_score"] + f1_scores
-        ]
+        dataset = [[key]+val for key, val in metrics.items()]
 
-        metrics = {
-            "true-positives": true_positives,
-            "true-negatives":true_negatives,
-            "false-positives":false_positives,
-            "false-negatives":false_negatives,
-            "num-examples":num_examples,
-            "precision": precisions,
-            "recall": recalls,
-            "f1-score": f1_scores
-        }
-        
         return metrics, PrettyPrint.get_tabular_formatted_string(
                     dataset=dataset, 
                     headers=headers,
@@ -73,81 +61,78 @@ class Metrics:
                     partitions=[5,7]
                 )
 
-    
-    def get_optimal_threshold(self, true_labels, predictions, step=0.02):
+
+    def get_optimal_threshold(self, y, y_pred, step=0.1):
         '''  
         @params:
-        - true_labels: (d,n,num_categories) dimensional vector of 1s and 0s
-        - predictions: (d,n,num_categories) dimensional probability vector
+        - y: (d,n,num_categories) dimensional vector of 1s and 0s
+        - y_pred: (d,n,num_categories) dimensional probability vector
         '''
         thresholds = torch.range(0,1,step)
-        num_categories = true_labels.shape[-1]
 
-        max_youden_idx = [float("-inf"),]*num_categories
-        final_thresh = [-1,]*num_categories
+        youden_indices = []
 
         for thresh in thresholds:
-            predictions[predictions > thresh] = 1.0
-            predictions[predictions <= thresh] = 0.0
-               
-            for i in range(num_categories):
-                tp, tn, fp, fn = self.get_positives_and_negatives(true_labels[:,:,i], predictions[:,:,i])
-                recall = self.get_recall(tp, fn)
-                specificity = self.get_specificity(fp, tn)
+            y_pred[y_pred > thresh] = 1
+            y_pred[y_pred <= thresh] = 0
 
-                youden_idx = specificity + recall - 1
-                if youden_idx > max_youden_idx[i]:
-                    max_youden_idx[i] = youden_idx
-                    final_thresh[i] = thresh
+            tp, fp, tn, fn = self.get_cm_elements(y_pred, y)
+            recall = tp/(tp+fn)
+            recall = recall.nan_to_num()
+            recall[recall==torch.inf] = 0
 
-        return final_thresh
-    
+            specificity = tn/(tn+fp)
 
-    def get_positives_and_negatives(self, true_labels, predictions):
+            youden_idx = specificity + recall - 1
+            youden_indices.append(youden_idx.view(1,-1))
+
+        youden_indices = torch.concat(youden_indices, dim=0)
+        max_youden_idx = torch.max(youden_indices, dim=0).indices
+
+        return thresholds[max_youden_idx]
+
+
+    def get_cm_elements(self, y_pred, y):
         '''  
         @params:
-        - true_labels: (d,n,) dimensional vector of 1s and 0s
-        - predictions: (d,n,) dimensional vector of 1s and 0s
-
-        @function:
-        - get true positives, true negatives, false positives, false negatives for ith class
+        - y: (d,n,num_categories) dimensional vector of 1s and 0s
+        - y_pred: (d,n,num_categories) dimensional probability vector
         '''
-        target = true_labels.view(-1)
-        preds = predictions.view(-1)
-        tp = torch.mul(target == preds, preds==1.0).sum().item()
-        tn = torch.mul(target == preds, preds==0.0).sum().item()
-        fp = torch.mul(target==0.0, preds==1.0).sum().item()
-        fn = torch.mul(target==1.0, preds==0.0).sum().item()
+        nc = y_pred.shape[-1]
 
-        return tp, tn, fp, fn
+        y_pred = y_pred.view(-1,nc)
+        y = y.view(-1, nc)
 
+        reshaped_true_labels = y.transpose(0,1).reshape(nc, -1)
+        reshaped_pred = y_pred.transpose(0,1).reshape(nc,-1)
 
-    def get_precision(self, tp, fp):
-        if tp!=0:
-            return round(tp/(tp+fp), self.n_decimals)
-        else:
-            return 0
+        true_labels_total = reshaped_true_labels.sum(dim=1)
+        pred_total = reshaped_pred.sum(dim=1)
 
-    
-    def get_recall(self, tp, fn):
-        if tp!=0:
-            return round(tp/(tp+fn), self.n_decimals)
-        else:
-            return 0
+        tp = (reshaped_true_labels * reshaped_pred).sum(dim=1)
+        fp = pred_total - tp
+        fn = true_labels_total - tp
+        tn = reshaped_true_labels.shape[1] - tp - fp - fn
+        
+        return tp, fp, tn, fn
 
 
-    def get_specificity(self, fp, tn):
-        return round(tn/(tn+fp), self.n_decimals)
 
+        
+if __name__ == "__main__":
+    m = Metrics(['a','b','c','d','e','f','g','h'])
+    d,n,nc = 2,3,8
 
-    def get_accuracy(self, tp, tn, fp, fn):
-        return round((tp+tn)/(tp+tn+fp+fn), self.n_decimals)
-
-
-    def get_f1_score(self,precision, recall):
-        if precision == 0 or recall == 0:
-            return None
-        else:
-            return round(2 / ((1/precision) + (1/recall)), self.n_decimals)
+    pred = torch.randn(d,n,nc).uniform_()
+    #pred = torch.randint(0,2,(d,n,nc))
+    y = torch.randint(0,2,(d,n,nc))
+    t = torch.randn(8).uniform_()
+    _, s= m.calc_metrics(pred, y, t)
+    print(pred)
+    print(t)
+    pred[pred > t] = 1
+    pred[pred <= t] = 0
+    print(pred)
+    #print(s)
 
     
