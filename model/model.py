@@ -12,12 +12,14 @@ import os
 
 class GENIAModel(nn.Module):
 
-    def __init__(self, dmodel=64, ctxt_window_size=5, device="cpu") -> None:
+    def __init__(self, save_path, dmodel=64, ctxt_window_size=5, device="cpu") -> None:
         super(GENIAModel, self).__init__()
 
         assert(ctxt_window_size%2 != 0), "ctxt_window_size must be an odd number"
 
         self.device = device
+        self.save_path = save_path
+
         class_names = [
             'O', 'B_amino_acid_monomer', 'I_amino_acid_monomer', 'B_peptide', 'I_peptide', 'B_protein_N/A', 
             'I_protein_N/A', 'B_protein_complex', 'I_protein_complex', 'B_protein_domain_or_region', 
@@ -42,17 +44,17 @@ class GENIAModel(nn.Module):
         self.num_encoders = 3
 
         self.bert_model = BertModel.from_pretrained("bert-base-uncased").to(device)
-        self.bert_model.embeddings.requires_grad = False
+        #self.bert_model.embeddings.requires_grad = False
 
-        self.engine = nn.Sequential(
+        """ self.engine = nn.Sequential(
             nn.Linear(768, 128),
             *[
                 nn.TransformerEncoderLayer(d_model=128, nhead=4),
             ]*self.num_encoders
-        )
+        ) """
 
         self.engine_fc = nn.Sequential(
-            nn.Linear(128, self.nc),
+            nn.Linear(768, self.nc),
             nn.LayerNorm(self.nc)
         )
          
@@ -80,16 +82,18 @@ class GENIAModel(nn.Module):
             nn.LayerNorm(self.nc)
         )
 
-        self.metrics = Metrics(class_names)
+        self.metrics = Metrics(class_names, save_path)
 
         self.lr = 0.01
+        self.p_factor = 0.5
+        self.n_factor = 1
         self.model_name = "genia-model-v1.pt"
 
 
-    def load(self, save_path):
-        model_path = os.path.join(save_path, self.model_name)
+    def load(self):
+        model_path = os.path.join(self.save_path, self.model_name)
         self.load_state_dict(torch.load(model_path, map_location=self.device))
-        self.eval()
+        #self.eval()
 
 
     def forward(self, input_ids):
@@ -100,9 +104,9 @@ class GENIAModel(nn.Module):
         d,n = input_ids.shape
 
         # get the regular probabilities for the ner task using the BERT engine
-        state = self.bert_model.embeddings(input_ids)    # (d,n,768)
-        state = self.engine(state)
-        #state = self.bert_model(input_ids = input_ids).last_hidden_state   # (d,n,768)
+        #state = self.bert_model.embeddings(input_ids)    # (d,n,768)
+        #state = self.engine(state)
+        state = self.bert_model(input_ids = input_ids).last_hidden_state   # (d,n,768)
         state = self.engine_fc(state)                                       # (d,n,nc)
         probs = torch.sigmoid(state)                                        # (d,n,nc)
 
@@ -176,7 +180,7 @@ class GENIAModel(nn.Module):
         return ctxt_vec
     
 
-    def loss(self, pred_probs, target_labels, p_factor = 0.5, n_factor = 2):
+    def loss(self, pred_probs, target_labels):
         """  
         @params:
         - pred_probs    =>  probability tensor outputted by the model (d,n,nc)
@@ -192,8 +196,8 @@ class GENIAModel(nn.Module):
 
         num_negatives = [N - num_positives[i] for i in range(nc)]
 
-        p_weights = torch.FloatTensor([N/(p_factor * num_positives[i] + 1) for i in range(nc)]).unsqueeze(dim=-1) # (nc, 1)
-        n_weights = torch.FloatTensor([N/(n_factor * num_negatives[i] + 1) for i in range(nc)]).unsqueeze(dim=-1) # (nc, 1)
+        p_weights = torch.FloatTensor([N/(self.p_factor * num_positives[i] + 1) for i in range(nc)]).unsqueeze(dim=-1) # (nc, 1)
+        n_weights = torch.FloatTensor([N/(self.n_factor * num_negatives[i] + 1) for i in range(nc)]).unsqueeze(dim=-1) # (nc, 1)
 
         cost = torch.matmul(
             torch.mul( 
@@ -237,7 +241,7 @@ class GENIAModel(nn.Module):
 
 
  
-    def train(self, train_loader, test_loader, save_path,  num_epochs=10):
+    def train(self, train_loader, test_loader,  num_epochs=10):
 
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
 
@@ -290,7 +294,7 @@ class GENIAModel(nn.Module):
                 }
             )
 
-            torch.save(self.state_dict(), os.path.join(save_path, self.model_name))
+            torch.save(self.state_dict(), os.path.join(self.save_path, self.model_name))
 
         y_pred = torch.concat(y_pred, dim=0)
         y = torch.concat(y, dim=0)
@@ -299,7 +303,7 @@ class GENIAModel(nn.Module):
 
         _, metric_table = self.test(test_loader, thresholds)
 
-        with open(os.path.join(save_path, "eval-results.txt"), "w") as fp:
+        with open(os.path.join(self.save_path, "eval-results.txt"), "w") as fp:
             fp.write(metric_table)
 
 

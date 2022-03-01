@@ -1,15 +1,40 @@
 # pytorch-ignite == 0.4.8
 
 import collections
+import os
 import torch
+import json
+import matplotlib.pyplot as plt
 from utils import *
 
 
 class Metrics:
 
-    def __init__(self, class_names, n_decimals=4) -> None:
+    def __init__(self, class_names, save_folder, n_decimals=4, fname="metrics") -> None:
         self.class_names = class_names
         self.n_decimals = n_decimals
+        self.fname = fname
+        self.save_folder = save_folder
+
+
+    def read_json(self):
+        fname = os.path.join(self.save_folder, self.fname+".json")
+        try:
+            with open(fname, "r") as fp:
+                file = json.load(fp)
+
+            return file
+        except:
+            return None
+
+
+    def plot(self, class_wise_metrics, axs, ylabel):
+        
+        for y in class_wise_metrics:
+            x = list(range(len(y)))
+            axs.plot(x,y)
+
+        axs.set_ylabel(ylabel)
 
 
     def calc_metrics(self, y, y_pred, thresholds):
@@ -49,6 +74,35 @@ class Metrics:
             "recall": round_tensor(recall),
             "f1-score": round_tensor(f1_score)
         })
+
+        metric_file = self.read_json()
+        if not metric_file:
+            metric_file = {
+                "true-positives": [[] for _ in range(len(self.class_names))],
+                "true-negatives": [[] for _ in range(len(self.class_names))],
+                "false-positives": [[] for _ in range(len(self.class_names))],
+                "false-negatives": [[] for _ in range(len(self.class_names))]
+            }
+
+        for i in range(len(self.class_names)):
+            metric_file["true-positives"][i].append(metrics["true-positives"][i])
+            metric_file["true-negatives"][i].append(metrics["true-negatives"][i])
+            metric_file["false-positives"][i].append(metrics["false-positives"][i])
+            metric_file["false-negatives"][i].append(metrics["false-negatives"][i])
+
+        fname = os.path.join(self.save_folder, self.fname+".json")
+        with open(fname, "w") as fp:
+            json.dump(metric_file, fp)
+
+        fig, axes = plt.subplots(2,2)
+        fig.suptitle('Variation of evaluation metrics over epochs')
+
+        self.plot(metric_file["true-positives"], axes[0][0], "true-positives")
+        self.plot(metric_file["true-negatives"], axes[0][1], "true-negatives")
+        self.plot(metric_file["false-positives"], axes[1][0], "false-positives")
+        self.plot(metric_file["false-negatives"], axes[1][1], "false-negatives")
+
+        plt.show()
 
         headers = ['metric',] + self.class_names
         dataset = [[key]+val for key, val in metrics.items()]
