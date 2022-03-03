@@ -4,38 +4,63 @@ import collections
 import os
 import torch
 import json
-import matplotlib.pyplot as plt
 from utils import *
 
 
 class Metrics:
 
     def __init__(self, class_names, save_folder, n_decimals=4, fname="metrics") -> None:
+        """  
+        @params:
+        - class_names   =>  list of names of all classes
+        - save_folder   =>  path to the folder where metrics file is stored / should be stored
+        - n_decimals    =>  number of decimals needed in the metrics
+        - fname         =>  name of the file where all metrics will be stored
+        """
         self.class_names = class_names
         self.n_decimals = n_decimals
-        self.fname = fname
+        self.metric_file_name = os.path.join(self.save_folder, fname+".json")
         self.save_folder = save_folder
 
+        # store the json data in self.metric_file
+        self.read_metrics()
 
-    def read_json(self):
-        fname = os.path.join(self.save_folder, self.fname+".json")
+        # store the calculated metrics
+        self.calculated_metrics = None
+    
+
+    def read_metrics(self):
         try:
-            with open(fname, "r") as fp:
+            with open(self.metric_file_name, "r") as fp:
                 file = json.load(fp)
-
-            return file
+            self.metric_file = file
         except:
-            return None
+            self.metric_file = None
+
+    
+    def write_metrics(self):
+        with open(self.metric_file_name, "w") as fp:
+            json.dump(self.metric_file, fp)
 
 
-    def plot(self, class_wise_metrics, axs, ylabel):
+    def record(self, metric_name, val):
+        """  
+        @description:
+        - records values 'val' for 'metric_name' in the metric file
+        """
+        if not self.metric_file:
+            self.metric_file = {
+                metric_name: [val]
+            }
+
+        elif metric_name not in self.metric_file:
+            self.metric_file[metric_name] = [val]
         
-        for y in class_wise_metrics:
-            x = list(range(len(y)))
-            axs.plot(x,y)
+        elif metric_name in self.metric_file:
+            self.metric_file[metric_name].append(val)
 
-        axs.set_ylabel(ylabel)
-
+        self.calculated_metrics[metric_name] = val
+    
 
     def calc_metrics(self, y, y_pred, thresholds):
         '''  
@@ -43,6 +68,7 @@ class Metrics:
         - y: (d,n,num_categories) dimensional vector of 1s and 0s
         - y_pred: (d,n,num_categories) dimensional probability vector
         '''
+
         y_pred[y_pred > thresholds] = 1
         y_pred[y_pred <= thresholds] = 0
 
@@ -63,7 +89,7 @@ class Metrics:
 
         round_tensor = lambda tensor: [round(x, self.n_decimals) for x in tensor.tolist()]
 
-        metrics = collections.OrderedDict({
+        self.calculated_metrics = collections.OrderedDict({
             "true-positives": tp.tolist(),
             "true-negatives":tn.tolist(),
             "false-positives":fp.tolist(),
@@ -75,45 +101,21 @@ class Metrics:
             "f1-score": round_tensor(f1_score)
         })
 
-        metric_file = self.read_json()
-        if not metric_file:
-            metric_file = {
-                "true-positives": [[] for _ in range(len(self.class_names))],
-                "true-negatives": [[] for _ in range(len(self.class_names))],
-                "false-positives": [[] for _ in range(len(self.class_names))],
-                "false-negatives": [[] for _ in range(len(self.class_names))]
-            }
+            
+    def pretty_print_results(self):
+        if self.calculated_metrics:
+            headers = ['metric',] + self.class_names
+            dataset = [[key]+val for key, val in self.calculated_metrics.items()]
 
-        for i in range(len(self.class_names)):
-            metric_file["true-positives"][i].append(metrics["true-positives"][i])
-            metric_file["true-negatives"][i].append(metrics["true-negatives"][i])
-            metric_file["false-positives"][i].append(metrics["false-positives"][i])
-            metric_file["false-negatives"][i].append(metrics["false-negatives"][i])
-
-        fname = os.path.join(self.save_folder, self.fname+".json")
-        with open(fname, "w") as fp:
-            json.dump(metric_file, fp)
-
-        fig, axes = plt.subplots(2,2)
-        fig.suptitle('Variation of evaluation metrics over epochs')
-
-        self.plot(metric_file["true-positives"], axes[0][0], "true-positives")
-        self.plot(metric_file["true-negatives"], axes[0][1], "true-negatives")
-        self.plot(metric_file["false-positives"], axes[1][0], "false-positives")
-        self.plot(metric_file["false-negatives"], axes[1][1], "false-negatives")
-
-        plt.show()
-
-        headers = ['metric',] + self.class_names
-        dataset = [[key]+val for key, val in metrics.items()]
-
-        return metrics, PrettyPrint.get_tabular_formatted_string(
-                    dataset=dataset, 
-                    headers=headers,
-                    include_serial_numbers=False,
-                    table_header="Evaluation metrics",
-                    partitions=[5,7]
-                )
+            file = PrettyPrint.get_tabular_formatted_string(
+                        dataset=dataset, 
+                        headers=headers,
+                        include_serial_numbers=False,
+                        table_header="Evaluation metrics",
+                        partitions=[5,7]
+                    )
+            return file
+        return None
 
 
     def get_optimal_threshold(self, y, y_pred, step=0.1):
@@ -169,7 +171,6 @@ class Metrics:
         tn = reshaped_true_labels.shape[1] - tp - fp - fn
         
         return tp, fp, tn, fn
-
 
 
         

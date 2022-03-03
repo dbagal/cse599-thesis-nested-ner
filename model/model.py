@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as f
 import torch.optim as optim
 from transformers import BertModel
 from transformers import logging
@@ -8,14 +7,13 @@ logging.set_verbosity_error()
 from tqdm import tqdm
 from metrics import Metrics
 import os
+import matplotlib.pyplot as plt
 
 
 class GENIAModel(nn.Module):
 
-    def __init__(self, save_path, dmodel=64, ctxt_window_size=5, device="cpu") -> None:
+    def __init__(self, save_path, dmodel=64, device="cpu") -> None:
         super(GENIAModel, self).__init__()
-
-        assert(ctxt_window_size%2 != 0), "ctxt_window_size must be an odd number"
 
         self.device = device
         self.save_path = save_path
@@ -37,16 +35,17 @@ class GENIAModel(nn.Module):
             'B_tissue', 'I_tissue', 'B_cell_type', 'I_cell_type', 'B_cell_component', 'I_cell_component', 
             'B_cell_line', 'I_cell_line', 'B_other_artificial_source', 'I_other_artificial_source', 
             'B_other_name', 'I_other_name']
+        self.metrics = Metrics(class_names, save_path)
 
         self.nc = len(class_names)
         self.dmodel = dmodel
 
-        self.num_encoders = 3
-
+        # model layers
         self.bert_model = BertModel.from_pretrained("bert-base-uncased").to(device)
-        #self.bert_model.embeddings.requires_grad = False
 
-        """ self.engine = nn.Sequential(
+        """ 
+        self.num_encoders = 3
+        self.engine = nn.Sequential(
             nn.Linear(768, 128),
             *[
                 nn.TransformerEncoderLayer(d_model=128, nhead=4),
@@ -66,13 +65,6 @@ class GENIAModel(nn.Module):
             kernel_size= (self.nc,1)
         )
 
-        self.cwnd = ctxt_window_size
-        self.conv2 = nn.Conv2d(
-            in_channels=1, 
-            out_channels=1, 
-            kernel_size=(self.cwnd, 1)
-        )
-
         self.wagon = nn.TransformerEncoderLayer(d_model=self.dmodel + 768, nhead=4)
 
         self.wagon_fc = nn.Sequential(
@@ -81,9 +73,8 @@ class GENIAModel(nn.Module):
             nn.Linear(768, self.nc),
             nn.LayerNorm(self.nc)
         )
-
-        self.metrics = Metrics(class_names, save_path)
-
+        
+        # model parameters
         self.lr = 0.01
         self.p_factor = 0.5
         self.n_factor = 1
@@ -120,12 +111,7 @@ class GENIAModel(nn.Module):
             probs.unsqueeze(-1), category_embeddings
         ).view(d*n, 1, self.nc, self.dmodel)    # (d*n, 1, nc, dmodel) => (d,n,nc, dmodel)
 
-        # get the ctxt vector with every vector being a convolution of it's 'cwnd' surrounding vectors
         word_category_vec = self.conv1(category_embeddings).view(d,n,self.dmodel)       # (d*n, 1, nc, dmodel) => (d*n,1,1,dmodel) => (d,n,dmodel) 
-        ctxt_vec = self.get_context_vector(word_category_vec, self.cwnd)                # (d,n,cwnd,dmodel)
-        word_category_vec = self.conv2(
-            ctxt_vec.view(d*n, 1, self.cwnd, self.dmodel)
-        ).view(d,n,self.dmodel)                                                         # (d*n, 1, cwnd, dmodel) => (d*n,1,1,dmodel) => (d,n,dmodel)
         
         # get the original word embeddings from the BERT engine
         word_embeddings = self.bert_model.embeddings(input_ids)    # (d,n,768)
@@ -141,45 +127,6 @@ class GENIAModel(nn.Module):
         return final_probs
 
 
-    def get_context_vector(self, vector, cwnd):
-        """  
-        @params:
-        - vector    =>  pytorch tensor of dimension (d,n,dmodel)
-
-        @returns:
-        - ctxt_vec  =>  pytorch tensor of dimension (d,n,cwnd,dmodel)
-        """
-
-        d,n,dmodel = vector.shape
-
-        # number of surrounding elements to the left or right
-        # e.g: [0,0,23,0,0] => # of surrounding 0's = arr.size//2 = 5//2 = 2
-        ns = cwnd//2
-
-        # (d, n, dmodel) => (d, n + surround*2, dmodel)
-        vector = torch.concat(
-            [
-                torch.zeros(d, ns, dmodel),
-                vector,
-                torch.zeros(d, ns, dmodel)
-            ],
-            dim =1
-        )
-
-        # calculate the number of blocks formed after grouping consecutive elements into groups of size cwnd
-        # for 10 elements in the sequence, we can have 6 5-tuple sequences (10 - (5-1))
-        # e.g: [1,2,3,4,5], cwnd = 3 => [ (1,2,3), (2,3,4), (3,4,5) ]
-        # num_blocks = (n + ns*2)  - (self.cwnd - 1) = n
-
-        # (d,n,dmodel) => (d, n, cwnd, dmodel)
-        ctxt_vec = f.unfold(
-            vector.view(d,1,n+2*ns,dmodel), 
-            kernel_size=(cwnd, 1)
-        ).view(d, n, cwnd, dmodel)
-
-        return ctxt_vec
-    
-
     def loss(self, pred_probs, target_labels):
         """  
         @params:
@@ -190,15 +137,20 @@ class GENIAModel(nn.Module):
         """
         d,n,nc = pred_probs.shape
         N = d*n
+
+        # store the number of positive and negative examples for each class in num_positives and num_negatives
         num_positives = [-1]*nc
         for i in range(nc):
             num_positives[i] = torch.count_nonzero(target_labels[:,:,i]==1).item()
 
         num_negatives = [N - num_positives[i] for i in range(nc)]
 
+        # each class has a p_weight and n_weight
+        # p_weight amount of ylogy and n_weight amount of (1-y)log(1-y) is added to the loss
         p_weights = torch.FloatTensor([N/(self.p_factor * num_positives[i] + 1) for i in range(nc)]).unsqueeze(dim=-1) # (nc, 1)
         n_weights = torch.FloatTensor([N/(self.n_factor * num_negatives[i] + 1) for i in range(nc)]).unsqueeze(dim=-1) # (nc, 1)
 
+        # calculate bce loss as p_weight * ylogy + n_weight * (1-y)log(1-y)
         cost = torch.matmul(
             torch.mul( 
                 target_labels, 
@@ -218,10 +170,11 @@ class GENIAModel(nn.Module):
         
         return cost
 
-
+    
     def test(self, test_loader, thresholds):
 
         with torch.no_grad():
+
             predictions = []
             target_labels = []
         
@@ -230,82 +183,108 @@ class GENIAModel(nn.Module):
                 batch_input_ids = batch_input_ids.to(self.device)
                 batch_target_labels = batch_target_labels.to(self.device)
 
+                # calc output probabilities for each batch input
                 probs = self(batch_input_ids)  # (d,n,nc)
+
+                # store the batch probabilities and batch target labels for calculating metrics over the entire test set
                 predictions.append(probs)
                 target_labels.append(batch_target_labels)
 
+            # concatenate all batch outputs
             target_labels = torch.concat(target_labels, dim=0)
             predictions = torch.concat(predictions, dim=0)
 
-            return self.metrics.calc_metrics(target_labels, predictions, thresholds)
+            # calculate metrics for the entire test set
+            self.metrics.calc_metrics(target_labels, predictions, thresholds)
 
+            return self.loss(predictions, target_labels).item()
 
  
     def train(self, train_loader, test_loader,  num_epochs=10):
 
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
-
         progress_bar = tqdm(range(num_epochs), position=0, leave=True)
 
-        recorded_e_loss = 0.0
+        # train_loss and test_loss represents the loss over the entire training set and test set after each epoch
+        train_loss = 0.0
+        test_loss = 0.0
         
         num_batches = len(train_loader)
 
         for epoch in progress_bar:
+
+            y_pred = y = []
             progress_bar.set_description(f"epoch: {epoch} ")
+
+            # aggregate all batch losses in epoch_loss
             epoch_loss = 0.0
 
-            y_pred, y = [], []
             for step, (input_ids, target_labels) in enumerate(train_loader):
 
                 input_ids = input_ids.to(self.device)
                 target_labels = target_labels.to(self.device)
 
+                # clear gradients
                 optimizer.zero_grad()
 
+                # forward and backward pass
                 probs = self(input_ids)
-
                 batch_loss = self.loss(probs, target_labels)
                 batch_loss.backward()
-
                 optimizer.step()
 
                 epoch_loss += batch_loss.detach().item()
-
                 progress_bar.set_postfix(
                     {
                         "batch":step,
                         "batch-loss": str(batch_loss.detach().item()),
-                        "epoch-loss": str(recorded_e_loss)
+                        "train-loss": str(train_loss),
+                        "test-loss": str(test_loss)
                     }
                 )
 
+                # collect all batch outputs for evaluation
                 y_pred.append(probs)
                 y.append(target_labels)
             
-            
-            recorded_e_loss = epoch_loss/num_batches
+            # calculate optimal threshold for each class based on the predictions and true labels of entire training set
+            y_pred = torch.concat(y_pred, dim=0)
+            y = torch.concat(y, dim=0)
+            thresholds = self.metrics.get_optimal_threshold(y_pred, y)
+
+            # calculate test loss and all metrics
+            test_loss = self.test(test_loader, thresholds)
+            train_loss = epoch_loss/num_batches
+
+            self.metrics.record("train-loss", train_loss)
+            self.metrics.record("test-loss", test_loss)
 
             progress_bar.set_postfix(
                 {
                     "batch":step,
                     "batch-loss": str(batch_loss.detach().item()),
-                    "epoch-loss": str(recorded_e_loss)
+                    "train-loss": str(train_loss),
+                    "test-loss": str(test_loss)
                 }
             )
 
+            # save model after every epoch
             torch.save(self.state_dict(), os.path.join(self.save_path, self.model_name))
+        
+        self.metrics.write_metrics()
 
-        y_pred = torch.concat(y_pred, dim=0)
-        y = torch.concat(y, dim=0)
-
-        thresholds = self.metrics.get_optimal_threshold(y_pred, y)
-
-        _, metric_table = self.test(test_loader, thresholds)
-
+        # write the latest calculated metrics to a file
         with open(os.path.join(self.save_path, "eval-results.txt"), "w") as fp:
-            fp.write(metric_table)
+            fp.write(self.metrics.pretty_print_results())
 
+        train_losses = self.metrics.metric_file["train-loss"]
+        test_losses = self.metrics.metric_file["test-loss"]
+        epochs = list(range(len(train_losses)))
+
+        plt.plot(epochs, train_losses, "-b", label="Training loss")
+        plt.plot(epochs, test_losses, "-r", label="Test loss")
+        plt.legend(loc="upper right")
+        plt.show()
 
 
 if __name__ == "__main__":

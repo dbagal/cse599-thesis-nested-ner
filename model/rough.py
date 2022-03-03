@@ -5,7 +5,11 @@ x = [7, 14, 21, 28, 35, 42, 49]
 y = [5, 12, 19, 21, 31, 27, 35]
 z = [3, 5, 11, 20, 15, 29, 31]
 
-x = [1],
+plt.plot(x,y, "-b", label="train")
+plt.plot(x,z, "-r", label="test")
+plt.legend(loc="upper left")
+
+""" x = [1],
 y = [2],
 z = [3]
 
@@ -18,6 +22,6 @@ axs[0][0].plot(x,y)
 axs[0][1].plot(x,z)
 
 axs[1][0].plot(x,y)
-axs[1][0].set_ylabel("tp")
+axs[1][0].set_ylabel("tp") """
 
 plt.show()
