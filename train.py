@@ -25,24 +25,23 @@ with open(os.path.join(os.getcwd(), "train-config.json"), "r") as fp:
 batch_size = config["batch-size"]
 main_folder = config["main-folder"]
 
-train_folder = config["train-folder"]
-test_folder = config["test-folder"]
-semantic_categories_file = config["categories-file"]
+train_file = config["train-file"]
+test_file = config["test-file"]
 
 device="cuda"
 tokenizer = BERTTokenizer()
 
 # generate and save datasets to file
-"""  
-train_dataset = GENIADataset(tokenizer, semantic_categories_file, train_folder)
-test_dataset = GENIADataset(tokenizer, semantic_categories_file, test_folder)
+ 
+train_dataset = GENIADataset(tokenizer, os.path.join(main_folder, train_file))
+test_dataset = GENIADataset(tokenizer, os.path.join(main_folder, test_file))
 
 with open(os.path.join(main_folder, "train.dataset"), 'wb') as fp:
   dump(train_dataset, fp)
 
 with open(os.path.join(main_folder, "test.dataset"), 'wb') as fp:
   dump(test_dataset, fp)
- """
+
 
 # load train and test datasets from file
 with open(os.path.join(main_folder, "train.dataset"), 'rb') as fp:
@@ -66,9 +65,10 @@ print(f"Labels batch shape: {test_labels.size()}") # batch_size, max_sent_len, n
 print(f"\nTraining batches: {len(train_loader)}")
 print(f"Test batches: {len(test_loader)}")
 
+""" 
 model = GENIAModel(main_folder)
-model.cuda()
-model.load()
+#model.cuda()
+#model.load()
 
 #model.p_factor = 0.7
 #model.n_factor = 2
@@ -95,4 +95,4 @@ for i in range(1):
     # if losses are nan, we can do error analysis and restart with the already backed-up working model
     if torch.isnan(torch.tensor(train_loss)) or torch.isnan(torch.tensor(test_loss)):
         break
-    
+     """

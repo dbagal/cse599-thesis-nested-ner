@@ -1,7 +1,6 @@
 {
     "batch-size": 128,
-    "main-folder": "/nestedner",
-    "train-folder": "/nestedner/dataset/train",
-    "test-folder": "/nestedner/dataset/test",
-    "categories-file": "/nestedner/semantic-categories.txt"
+    "main-folder": "/Users/dhavalbagal/Documents/GitHub/cse599-thesis-nested-ner/",
+    "train-file": "dataset/genia/train.data",
+    "test-file": "dataset/genia/test.data"
 }
