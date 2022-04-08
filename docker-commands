@@ -1,0 +1,11 @@
+cd /home/dbagal/nested-ner
+
+docker build . -t nestedner
+
+docker run --name c1 --gpus all -it --volume /home/dbagal/nested-ner:/nestedner  nestedner
+docker run --name c1 --gpus '"device=3"' -it --volume /home/dbagal/nested-ner:/nestedner  nestedner
+
+cd /nestedner
+docker rm -f c1
+docker image rm nestedner
+watch -n1 nvidia-smi

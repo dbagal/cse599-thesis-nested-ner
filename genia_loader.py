@@ -2,38 +2,67 @@
 Installation:
 pip3 install beautifulsoup4==4.10.0
 pip3 install lxml==4.7.1
-pip3 install tqdm
-pip3 install numpy
 """
 
 from bs4 import BeautifulSoup
 import bs4
 import re, os
-import json
 from tqdm import tqdm  
 from torch.utils.data import Dataset
-import json, os, re
-<<<<<<< Updated upstream
-=======
-from model.tokenizer import Tokenizer
->>>>>>> Stashed changes
-from vocab import Vocab
+import os, re
 import torch
 
+from bert_tokenizer import BERTTokenizer
 
-class GENIAPreprocessor:
 
-    def __init__(self, semantic_categories_file) -> None:
-        
+class GENIADataset(Dataset):
+
+    def __init__(self, tokenizer:BERTTokenizer, semantic_categories_file, data_folder, max_seq_len = 256) -> None:
+        """
+        @params:
+        - semantic_categories_file  =>  file containing names of all entities/categories separated by new line
+                                        (excluding outside tag)
+        """
+        self.tokenizer = tokenizer
+
         with open(semantic_categories_file, "r") as fp:
             categories = fp.readlines()
+        
+        num_labels = len(categories) + 1  # 1 for the outside tag
 
+        # store category <=> idx bidirectional mapping in self.semantic_categories
         self.semantic_categories = {i+1:label.strip("\n") for i,label in enumerate(categories)}
         self.semantic_categories.update({label.strip("\n"):i+1 for i,label in enumerate(categories)})
         self.semantic_categories.update({0:"outside", "outside":0})
 
-        num_labels = len(self.semantic_categories)//2
+        # store boundary-and-category-idx <=> bio-idx bidirectional mapping in self.category_boundaries
+        self.category_boundaries = {"outside": self.semantic_categories["outside"],}
+        c = 1
+        for i in range(1, num_labels):
+            self.category_boundaries[f"b-{self.semantic_categories[i]}"] = c
+            self.category_boundaries[f"i-{self.semantic_categories[i]}"] = c + 1
+            c += 2
+        self.category_boundaries.update({v:k for k,v in self.category_boundaries.items()})
+
+        self.output_vector_len = len(self.category_boundaries)//2
+
+        # get the xml file in the data folder
+        xml_file = None
+        for file in os.listdir(data_folder):
+            if file.endswith(".xml"):
+                xml_file = file
+                break
         
+        xml_file = os.path.join(data_folder, xml_file)
+
+        input_ids, target_labels = self.load(xml_file, max_seq_len)
+
+        self.input_ids = torch.LongTensor(input_ids)
+        self.target_labels = torch.FloatTensor(target_labels)
+
+        #print(self.input_ids.shape)
+        #print(self.target_labels.shape)
+         
     
     def __process_cons_element(self, cons_elem, coordinated_category = None, parent_categories=set()):
         """ 
@@ -120,6 +149,10 @@ class GENIAPreprocessor:
         """  
         @params:
         - sentence => xml string of the form '<sentence> ... </sentence>'
+
+        @returns:
+        - chunks        =>  2D list containing sentence chunks for all sentences in the abstract
+        - categories    =>  3D list containing multi-category labels for every token in every sentence
         """
 
         # maintain a list of text chunks in the 1D list 'chunks'
@@ -146,110 +179,86 @@ class GENIAPreprocessor:
         return chunks, categories
                   
 
-    def load(self, xml_file, tokenizer, output_dir=""):
+    def bio_labels(self, labels):
+        """  
+        @params:
+        - labels => 3D list containing multi-category labels for every token in every sentence
+                    [
+                        [
+                            [0,], [28,7], [74,14]
+                        ],
+                        [
+                            ...
+                        ]
+                    ]
+        """
+
+        # number of semantic categories including "outside" label
+        num_labels = len(self.semantic_categories)//2
         
-        with open(xml_file, "r") as fp:
-            content = fp.read()      
+        bio_labels = []
 
-        print("\nExtracting abstracts ...")
-        abstracts = BeautifulSoup(content, "lxml").find_all("abstract")
+        # for each semantic category, we maintain information about the category if it was encountered in the previous token
+        # this is required to make a decision on B, I, O tags
+        previously_present = {i:False for i in range(1, num_labels)}
 
-        sentences = []
-        print("\nExtracting sentences from abstracts ...")
-        for i in tqdm(range(len(abstracts))):
-            abstract = abstracts[i]
-            sentences += abstract.find_all("sentence")
+        # maintain a list of indices of all semantic categories excluding "outside"
+        all_category_indices = set(range(1,num_labels))
 
-        print("\nExtracting text chunks and their respective categories from each sentence ...")
-        input_data, target_labels = [], []  # 2D and 3D lists respectively
-        for i in tqdm(range(len(sentences))):
-            chunks, chunk_categories  = self.__process_sentence(sentences[i])
-            input_data += [chunks]
-            target_labels += [chunk_categories]
+        for sent_labels in tqdm(labels):
+            bio_sent_labels = []
 
-        print("\nTokenizing sentence chunks ...")
-        for i in tqdm(range(len(input_data))):
-            sent_tokens = []
-            token_indices = []
-            for j in range(len(input_data[i])):
-                tokens = tokenizer(input_data[i][j])
-                sent_tokens += tokens
-                token_indices += [target_labels[i][j],]*len(tokens)
-            input_data[i] = sent_tokens
-            target_labels[i] = token_indices
+            # for every new sentence reset the previously_present meta-data
+            previously_present = {i:False for i in range(1, num_labels)}
 
-        json_data = {
-            "categories":self.semantic_categories,
-            "input-data": input_data,
-            "target-labels": target_labels
-        }
+            for sent_token_labels in sent_labels:
+                bio_token_labels = []
 
-        xml_name = xml_file.split("/")[-1].rstrip(".xml")
-        jsonfile = os.path.join(output_dir, xml_name+".json")
+                for category_idx in sent_token_labels:
+                    semantic_category = self.semantic_categories[category_idx]
+                    # if category index was absent for previous token, then assign that category a 'B' tag
+                    if category_idx!=0 and previously_present[category_idx] == False:
+                        bio_token_labels += [self.category_boundaries[f"b-{semantic_category}"]]
+                        previously_present[category_idx] = True
 
-        with open(jsonfile, "w") as fp:
-            json.dump(json_data, fp)
+                    # if category index was present for previous token, then assign that category an 'I' tag
+                    elif category_idx!=0 and previously_present[category_idx] == True:
+                        bio_token_labels += [self.category_boundaries[f"i-{semantic_category}"]]
+                        previously_present[category_idx] = True
 
+                    elif category_idx == 0:
+                        bio_token_labels += [0]
 
+                # for categories which are absent for this token, 
+                # set their previously_present values to False
+                absent_category_indices = all_category_indices.difference(set(sent_token_labels))
+                for category_idx in absent_category_indices:
+                    previously_present[category_idx] = False
 
-class GENIADataset(Dataset):
-    
+                bio_sent_labels += [bio_token_labels]
 
-    def __init__(self, tokenizer:object, vocab:Vocab, semantic_categories_file, data_folder, max_seq_len = 256) -> None:
+            bio_labels += [bio_sent_labels]
         
-        super(GENIADataset, self).__init__()
-        self.tokenizer = tokenizer
+        return bio_labels
 
-        self.PAD_IDX = 0
-        self.UNK_IDX = 1
-
-        self.vocab = vocab
-
-        preprocessor = GENIAPreprocessor(semantic_categories_file)
-
-        # get the xml file in the data folder
-        xml_file = None
-        for file in os.listdir(data_folder):
-            if file.endswith(".xml"):
-                xml_file = file
-                break
-        
-        xml_file = os.path.join(data_folder, xml_file)
-        json_file = xml_file.split("/")[-1].rstrip(".xml")+".json"
-        
-        # if there is no json file in the data folder, preprocess the raw genia dataset and generate the json
-        if json_file not in os.listdir(data_folder):
-            preprocessor.load(xml_file, tokenizer, output_dir=data_folder)
-
-        with open(os.path.join(data_folder, json_file), "r") as fp:
-            json_dataset = json.load(fp)
-
-        # convert input tokens to their appropriate indices by looking up the vocabulary
-        input_data = []
-        print(f"\nLooking up token indices from vocabulary ...")
-        for sent in tqdm(json_dataset["input-data"]):
-            sent_token_indices = [self.vocab.word_to_idx.get(token, self.UNK_IDX) for token in sent]
-            input_data.append(sent_token_indices)
-
-<<<<<<< Updated upstream
-        self.output_vector_len = len(json_dataset["categories"].keys())//2 # 77
-=======
-        self.output_vector_len = len(json_dataset["bio-categories"].keys())//2 # 75
-        self.bio_categories = json_dataset["bio-categories"]
->>>>>>> Stashed changes
-
-        # convert target labels into one hot vectors
-        self.input_data, self.target_labels = self.pad(
-                                                    input_data, 
-                                                    self.one_hot_encoding(json_dataset["target-labels"]), 
-                                                    max_seq_len=max_seq_len
-                                                )
-
-        self.target_labels = torch.FloatTensor(self.target_labels)
-        self.input_data = torch.LongTensor(self.input_data) 
-    
 
     def one_hot_encoding(self, labels):
+        """  
+        @params:
+        - labels => 3D list containing multi-category labels for every token in every sentence
+                    [
+                        [
+                            [0,], [28,7], [74,14]
+                        ],
+                        [
+                            ...
+                        ]
+                    ]
+        
+        @returns:
+        - one_hot_labels => 3D list containing one-hot vectors instead of individual indices
+                            e.g: [28,7] => [0,0,...1,..........1]
+        """
         one_hot_labels = []
 
         print(f"\nEncoding target labels into one-hot vectors ...")
@@ -263,64 +272,83 @@ class GENIADataset(Dataset):
             one_hot_labels.append(one_hot_seq_labels)
 
         return one_hot_labels
-                    
 
-    def pad(self, input_data, target_labels, max_seq_len = None):
+
+    def load(self, xml_file, max_seq_len):
         
-        if max_seq_len is None:
-            max_seq_len = len(max(input_data, key=len))
+        with open(xml_file, "r") as fp:
+            content = fp.read()      
 
-        print(f"\nPadding input data ...")
-        for i,sent in tqdm(enumerate(input_data)):
-            if len(sent) < max_seq_len: 
-                # pad the sentence with 0 token      
-                input_data[i] += [self.PAD_IDX,]*(max_seq_len - len(input_data[i])) 
-            elif len(sent) > max_seq_len:
-                # truncate the sentence to 'max_seq_len' number of tokens
-                input_data[i] = input_data[i][0:max_seq_len]
+        print("\nExtracting abstracts ...")
+        abstracts = BeautifulSoup(content, "lxml").find_all("abstract")
 
-        print(f"\nPadding target labels ...")
-        for i,sent_labels in tqdm(enumerate(target_labels)):
-            if len(sent_labels) < max_seq_len:
-                pad_vec = [self.PAD_IDX  for _ in range(self.output_vector_len)]
-                target_labels[i] += [pad_vec for _ in range((max_seq_len - len(target_labels[i])))] 
-            elif len(sent_labels) > max_seq_len:
-                target_labels[i] = target_labels[i][0:max_seq_len]
-                
-        return input_data, target_labels 
+        sentences = []
+        print("\nExtracting sentences from abstracts ...")
+        for i in tqdm(range(len(abstracts))):
+            abstract = abstracts[i]
+            sentences += abstract.find_all("sentence")
+
+        input_ids, token_labels = [], []  # 2D and 3D lists respectively
+        observed_max_len = -1
+        print("\nTokenizing text chunks and their respective categories from each sentence ...")
+        for i in tqdm(range(len(sentences))):
+            chunks, chunk_categories  = self.__process_sentence(sentences[i])
+            sent_tokens = []
+            sent_token_labels = []
+
+            # tokenize every chunk in the sequence and repeat the chunk label "len(tokens)" times 
+            # so that each token gets its own chunk_label 
+            for i,chunk in enumerate(chunks):
+                tokens = self.tokenizer.tokenize(chunk)
+                sent_tokens += tokens
+                sent_token_labels += [chunk_categories[i],]*len(tokens)
+
+            # record the actual length of the max sequence
+            observed_max_len = max(observed_max_len, len(sent_tokens))
+
+            # convert the list of all words in the sentence to their corresponding indices
+            input_ids.append(self.tokenizer.word_to_idx(sent_tokens))
+            token_labels.append(sent_token_labels)
+
+        max_seq_len = min(max_seq_len, observed_max_len)
+
+        print("\nPadding input data and target labels ...")
+        for i in tqdm(range(len(sentences))):
             
+            o = [self.semantic_categories["outside"],]
+            cls = self.tokenizer.word_to_idx(["[CLS]"])[0]
+            sep = self.tokenizer.word_to_idx(["[SEP]"])[0]
+            pad = self.tokenizer.word_to_idx(["[PAD]"])[0]
+
+            n = len(input_ids[i])
+
+            if n < max_seq_len - 2:
+                # pad the sequence with pad tokens
+                input_ids[i] = [ cls, *input_ids[i], sep,  *[pad,]*(max_seq_len - 2 - n) ]
+                token_labels[i] = [ o, *token_labels[i], o, *[o,]*(max_seq_len - 2 - n) ]
+            else:
+                # truncate the sequence to max_seq_len
+                input_ids[i] = [ cls, *input_ids[i][:max_seq_len-2], sep ]
+                token_labels[i] = [ o, *token_labels[i][:max_seq_len-2], o ]
+
+        print("\nConverting category labels according to BIO scheme ...")
+        bio_labels = self.one_hot_encoding(self.bio_labels(token_labels))
+
+        
+        return input_ids, bio_labels
+
 
     def __len__(self):
         return self.target_labels.shape[0]
 
 
     def __getitem__(self, idx):
-        return self.input_data[idx], self.target_labels[idx]
+        return self.input_ids[idx], self.target_labels[idx]
 
 
-if __name__=="__main__":
-    
-    def tokenizer(text):
-        word_pattern = re.compile(r'''([0-9]+|[-/,\[\]{}`~!@#$%\^&*()_\+=:;"'?<>])|(\.) |(\.$)|([a-z]'[a-z])| ''')
-        tokens = [token for token in word_pattern.split(text) if token]
-        return tokens
-        
+if __name__ == "__main__":
+
+    tokenizer = BERTTokenizer()
+    semantic_categories_file = "/Users/dhavalbagal/Documents/GitHub/cse599-thesis-nested-ner/semantic-categories.txt"
     data_folder = "/Users/dhavalbagal/Documents/GitHub/cse599-thesis-nested-ner/genia-dataset"
-    vocab_size = 20000
-    dataset_file = "/Users/dhavalbagal/Documents/GitHub/cse599-thesis-nested-ner/genia-dataset/GENIAcorpus3.02.xml"
-    vocab_file_path = "/Users/dhavalbagal/Documents/GitHub/cse599-thesis-nested-ner/vocab.json"
-    semantic_categories = "/Users/dhavalbagal/Documents/GitHub/cse599-thesis-nested-ner/semantic-categories.txt"
-
-    ## Building vocabulary from a single .txt file
-    #vocab = Vocab(vocab_size=vocab_size, tokenizer=tokenizer)
-    #vocab.buildFromFile(dataset_file)
-    #vocab.save(vocab_file_path)
-
-    ## Loading the vocabulary
-    vocab  = Vocab()
-    vocab.load(vocab_file_path)
-
-    loader = GENIADataset(tokenizer, semantic_categories, data_folder)
-    print(len(loader), len(loader[0]))
-    x,y = loader[0]
-    print(x.shape, y.shape)
+    d = GENIADataset(tokenizer, semantic_categories_file, data_folder)

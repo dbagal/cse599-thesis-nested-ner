@@ -1,102 +1,98 @@
-import torch
-import torch.optim as optim
-import torch.nn.functional as F
-import torch.nn as nn
-from torch.utils.data import DataLoader
-import re, os
-from tqdm import tqdm
-from models import GENIAReformer
+# Installation
+# !pip3 -qq install beautifulsoup4==4.10.0
+# !pip3 -qq install transformers==4.16.2
+# !pip3 -qq install psutil==5.9.0
 
+from psutil import virtual_memory
+ram_gb = virtual_memory().total/1073741824
+
+print(f"Available RAM: {ram_gb} GB\n")
+
+from torch.utils.data import DataLoader
+import os, json
+#import pickle
+from pickle import dump, load
 import warnings
 warnings.filterwarnings("ignore")
 
-from genia_dataloader import *
-from vocab import *
+from bert_tokenizer import *
+from genia_loader import *
+from model import *
 
-BATCH_SIZE = 256
-MODEL_SAVE_PATH = "/content/model.pt"
+with open(os.path.join(os.getcwd(), "train-config.json"), "r") as fp:
+    config = json.load(fp)
 
-data_folder = "/content/cse599-thesis/experiments/experiment-1/data"
-vocab_size = 20000
-vocab_file_path = "/content/cse599-thesis/experiments/experiment-1/vocab.json"
-label_file = '/content/cse599-thesis/experiments/experiment-1/labels.txt'
+batch_size = config["batch-size"]
+main_folder = config["main-folder"]
 
-vocab  = Vocab()
-vocab.load(vocab_file_path)
-
-def tokenizer(text):
-    word_pattern = re.compile(r'''([0-9]+|[-/,\[\]{}`~!@#$%\^&*()_\+=:;"'?<>])|(\.) |(\.$)|([a-z]'[a-z])| ''')
-    tokens = [token for token in word_pattern.split(text) if token]
-    return tokens
-
-dataset = GENIADataset(tokenizer, vocab, label_file, data_folder, num_tokens_in_sent=None)
-train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8)
-
-train_features, train_labels = next(iter(train_loader))
-print(f"Feature batch shape: {train_features.size()}")  # BATCH_SIZE, max_sent_len
-print(f"Labels batch shape: {train_labels.size()}") # BATCH_SIZE, max_sent_len, num_categories=77
-
-
+train_folder = config["train-folder"]
+test_folder = config["test-folder"]
+semantic_categories_file = config["categories-file"]
 
 device="cuda"
+tokenizer = BERTTokenizer()
 
-model = GENIAReformer(
-    dmodel=1024, 
-    dqk=512, 
-    dv=512, 
-    heads=4, 
-    feedforward=2048,
-    vocab_size=vocab_size, 
-    num_buckets=32, 
-    num_bio_labels=77, 
-    device=device
-)
+# generate and save datasets to file
+"""  
+train_dataset = GENIADataset(tokenizer, semantic_categories_file, train_folder)
+test_dataset = GENIADataset(tokenizer, semantic_categories_file, test_folder)
 
-#model.load_state_dict(torch.load(root+"model.pt", map_location=torch.device(device)))
+with open(os.path.join(main_folder, "train.dataset"), 'wb') as fp:
+  dump(train_dataset, fp)
 
+with open(os.path.join(main_folder, "test.dataset"), 'wb') as fp:
+  dump(test_dataset, fp)
+ """
 
+# load train and test datasets from file
+with open(os.path.join(main_folder, "train.dataset"), 'rb') as fp:
+  train_dataset = load(fp)
 
-optimizer = optim.Adam(model.parameters(), lr=0.01)
-bce_loss = nn.BCELoss()
+with open(os.path.join(main_folder, "test.dataset"), 'rb') as fp:
+  test_dataset = load(fp)
 
-num_epochs = 10
-for param_group in optimizer.param_groups:
-    param_group['lr'] = 0.0001
+# define dataloaders
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=8)
+train_features, train_labels = next(iter(train_loader))
+test_features, test_labels = next(iter(test_loader))
 
+print(f"\nFeature batch shape: {train_features.size()}")  # batch_size, max_sent_len
+print(f"Labels batch shape: {train_labels.size()}") # batch_size, max_sent_len, num_categories=77
 
+print(f"\nFeature batch shape: {test_features.size()}")  # batch_size, max_sent_len
+print(f"Labels batch shape: {test_labels.size()}") # batch_size, max_sent_len, num_categories=77
 
-model_save_path = "/content/model.pt"
-progress_bar = tqdm(range(num_epochs), position=0, leave=True)
+print(f"\nTraining batches: {len(train_loader)}")
+print(f"Test batches: {len(test_loader)}")
 
-#torch.autograd.set_detect_anomaly(True)
+model = GENIAModel(main_folder)
+model.cuda()
+model.load()
 
-for epoch in progress_bar:     
-    epoch_loss = 0.0   
-    num_batches = 0
-    progress_bar.set_description(f"Epoch {epoch} ")
+#model.p_factor = 0.7
+#model.n_factor = 2
+model.lr = 0.01
+model.loss_amplify_factor = 100000000
+model.lr_adaptive_factor = 0.5
+model.lr_patience = 3
+#model.train(train_loader, test_loader, num_epochs=20)
+#print(f"Learning rate: {model.optimizer.param_groups[0]['lr']}")
+
+for i in range(1):
+    # first things first, backup the working model
+    try:
+        os.system("rm losses.png")
+        os.system("cp /nestedner/genia-model-v1.pt /nestedner/genia-model-v1-copy.pt")
+    except:
+        print("Backing up process failed")
+        pass
+
+    # train the model, save the model and calculate the losses
+    train_loss, test_loss = model.train(train_loader, test_loader, num_epochs=2)
+    print(f"Learning rate: {model.optimizer.param_groups[0]['lr']}\n")
+
+    # if losses are nan, we can do error analysis and restart with the already backed-up working model
+    if torch.isnan(torch.tensor(train_loss)) or torch.isnan(torch.tensor(test_loss)):
+        break
     
-    for step, data in enumerate(train_loader):
-    
-        input_data, output_labels = data
-        
-        input_data = input_data.to(device).view(1,BATCH_SIZE, -1)
-        output_labels = output_labels.to(device)
-        
-        optimizer.zero_grad()
-
-        output = model(input_data)  # input_data: (1, BATCH_SIZE, max_sent_len)
-
-        batch_loss = bce_loss(output, output_labels) 
-        batch_loss.backward()
-
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
-        optimizer.step()
-
-        epoch_loss += batch_loss.detach().item()
-        num_batches += 1
-        
-        b_loss = round(epoch_loss/num_batches, 8)
-        progress_bar.set_postfix({'batch':step,'batch-loss': str(b_loss)})
-    
-    torch.save(model.state_dict(), MODEL_SAVE_PATH)
-    #os.system("cp /content/model.pt /content/medical-claims/model.pt") 
