@@ -1,4 +1,4 @@
-from pickle import dump, load
+import collections
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -6,303 +6,258 @@ from transformers import BertModel
 from transformers import logging
 logging.set_verbosity_error()
 from tqdm import tqdm
-from metrics import Metrics
-import os, sys
+import os, sys, json
+from utils import *
 import matplotlib.pyplot as plt
+
+
+class Logger:
+    def __init__(self, log_dir) -> None:
+        self.log_dir = log_dir
+        self.log_path = os.path.join(self.log_dir, "logs.json")
+
+    
+    def read_log(self):
+        try:
+            with open(self.log_path, "r") as fp:
+                file = json.load(fp)
+            return file
+        except:
+            return dict()
+
+
+    def write_log(self, new_logs:dict, replace:dict):
+        log = self.read_log()
+
+        for k,v in new_logs:
+            if k in log and not replace[k]:
+                log[k].append(v)
+            elif k not in log and not replace[k]:
+                log[k] = [v]
+            else:
+                log[k] = v
+
+        with open(self.log_path, "w") as fp:
+            json.dump(log, fp)
+
 
 
 class GENIAModel(nn.Module):
 
-    def __init__(self, save_path, dmodel=64, device="cuda") -> None:
-        super(GENIAModel, self).__init__()
+    def __init__(self, num_labels=11) -> None:
 
-        self.device = device
-        self.save_path = save_path
-
-        class_names = [
-            'O', 'B_amino_acid_monomer', 'I_amino_acid_monomer', 'B_peptide', 'I_peptide', 'B_protein_N/A', 
-            'I_protein_N/A', 'B_protein_complex', 'I_protein_complex', 'B_protein_domain_or_region', 
-            'I_protein_domain_or_region', 'B_protein_family_or_group', 'I_protein_family_or_group', 
-            'B_protein_molecule', 'I_protein_molecule', 'B_protein_substructure', 'I_protein_substructure', 
-            'B_protein_subunit', 'I_protein_subunit', 'B_nucleotide', 'I_nucleotide', 'B_polynucleotide', 
-            'I_polynucleotide', 'B_DNA_N/A', 'I_DNA_N/A', 'B_DNA_domain_or_region', 'I_DNA_domain_or_region', 
-            'B_DNA_family_or_group', 'I_DNA_family_or_group', 'B_DNA_molecule', 'I_DNA_molecule', 
-            'B_DNA_substructure', 'I_DNA_substructure', 'B_RNA_N/A', 'I_RNA_N/A', 'B_RNA_domain_or_region', 
-            'I_RNA_domain_or_region', 'B_RNA_family_or_group', 'I_RNA_family_or_group', 'B_RNA_molecule', 
-            'I_RNA_molecule', 'B_RNA_substructure', 'I_RNA_substructure', 'B_other_organic_compound', 
-            'I_other_organic_compound', 'B_organic', 'I_organic', 'B_inorganic', 'I_inorganic', 'B_atom', 
-            'I_atom', 'B_carbohydrate', 'I_carbohydrate', 'B_lipid', 'I_lipid', 'B_virus', 'I_virus', 
-            'B_mono_cell', 'I_mono_cell', 'B_multi_cell', 'I_multi_cell', 'B_body_part', 'I_body_part', 
-            'B_tissue', 'I_tissue', 'B_cell_type', 'I_cell_type', 'B_cell_component', 'I_cell_component', 
-            'B_cell_line', 'I_cell_line', 'B_other_artificial_source', 'I_other_artificial_source', 
-            'B_other_name', 'I_other_name']
-        self.metrics = Metrics(class_names, save_path)
-
-        self.nc = len(class_names)
-        self.dmodel = dmodel
-
-        # model layers
-        self.bert_model = BertModel.from_pretrained("bert-base-uncased").to(device)
-        self.bert_embeddings = self.bert_model.embeddings
-
-        self.norm1 = nn.LayerNorm(768)
-        self.norm2 = nn.LayerNorm(768)
-
-        self.num_encoders = 6
-        self.engine = nn.Sequential(
-            *[
-                nn.TransformerEncoderLayer(d_model=768, nhead=4),
-            ]*self.num_encoders
-        )
-
-        self.engine_fc = nn.Sequential(
-            nn.Linear(768, self.nc),
-            nn.LayerNorm(self.nc)
-        )
-         
-        self.category_embeddings = nn.Embedding(self.nc, dmodel)
-
-        self.conv1 = nn.Conv2d(
-            in_channels=1,
-            out_channels=1,
-            kernel_size= (self.nc,1)
-        )
-
-        self.wagon = nn.TransformerEncoderLayer(d_model=self.dmodel + 768, nhead=4)
-        """ self.wagon = nn.Sequential(
-            *[
-                nn.TransformerEncoderLayer(d_model=self.dmodel + 768, nhead=4),
-            ]*self.num_encoders
-        ) """
-
-        self.wagon_fc = nn.Sequential(
-            nn.Linear(dmodel+768, 768),
-            nn.LayerNorm(768),
-            nn.Linear(768, self.nc),
-            nn.LayerNorm(self.nc)
-        )
-        
-        # model parameters
+        self.device = "cuda"
+        self.model_dir = os.getcwd()
+        self.model_name = "genia-model-v1.pt"
+        self.nl = num_labels
+        self.label_dmodel = 64
         self.lr = 0.01
-        self.p_factor = 0.5
-        self.n_factor = 1
         self.loss_amplify_factor = 10000
         self.lr_adaptive_factor = 0.5
         self.lr_patience = 5
-        self.model_name = "genia-model-v1.pt"
+        self.logger = Logger(self.model_dir)
+
+        self.label_names = ['O','B-cell_type', 'I-cell_type', 'B-RNA', 'I-RNA', 'B-DNA', 'I-DNA', 
+        'B-cell_line', 'I-cell_line', 'B-protein', 'I-protein']
+
+        ## engine module layers
+
+        # bert embeddings take care of the positional embeddings along with word embeddings
+        self.bert_embeddings = BertModel.from_pretrained("bert-base-uncased").embeddings.to(self.device)
+
+        self.num_engine_encoders = 6
+        self.engine = nn.Sequential(
+            *[
+                nn.TransformerEncoderLayer(d_model=768, nhead=4),
+            ]*self.num_engine_encoders
+        )
+
+        self.engine_fc = nn.Sequential(
+            nn.Linear(768, self.nl),
+            nn.LayerNorm(self.nl)
+        )
+        
+        ## global corrector module layers
+        self.label_embeddings = nn.Embedding(self.nl, self.label_dmodel)
+        self.conv1 = nn.Conv2d(
+            in_channels=1,
+            out_channels=1,
+            kernel_size= (self.nl,1)
+        )
+
+        self.gc = nn.TransformerEncoderLayer(d_model=self.label_dmodel + 768, nhead=4)
+        self.gc_fc = nn.Sequential(
+            nn.Linear(self.label_dmodel + 768, 768),
+            nn.LayerNorm(768),
+            nn.Linear(768, self.nl),
+            nn.LayerNorm(self.nl)
+        )
+
+
+    def config(self, **params):
+        for param, val in params.items():
+            setattr(self, param, val) 
 
 
     def load(self):
-        model_path = os.path.join(self.save_path, self.model_name)
+        model_path = os.path.join(self.model_dir, self.model_name)
         self.load_state_dict(torch.load(model_path, map_location=self.device))
         #self.eval()
 
 
-    def forward(self, input_ids):
+    def forward(self, x):
         """  
         @params:
-        - input_ids =>  indices of words in the input sequences (d,n)
+        - x =>  tensor of dimension (d,n) containing word indices
         """
-        d,n = input_ids.shape
 
-        # get the regular probabilities for the ner task using the BERT engine
-        state = self.bert_embeddings(input_ids)     # (d,n,768)
-        #state = self.norm1(state)                   # (d,n,768)
-        state = self.engine(state)                  # (d,n,768)
+        d,n = x.shape
 
-        #state = self.bert_model(input_ids = input_ids).last_hidden_state   # (d,n,768)
-        state = self.engine_fc(state)                                       # (d,n,nc)
-        probs = torch.sigmoid(state)                                        # (d,n,nc)
+        # get the local-view probabilities for the ner task using the engine module
+        word_embeddings = self.bert_embeddings(x)     # (d,n,768)
+        state = self.engine(word_embeddings)          # (d,n,768)
+        state = self.engine_fc(state)       # (d,n,nl)
+        probs = torch.sigmoid(state)        # (d,n,nl)
 
-        # get all category embeddings to fuse them with the generated probabilities
-        i = torch.LongTensor(range(self.nc)).repeat(d,n,1).to(self.device)  # (d,n,nc)
-        category_embeddings = self.category_embeddings(i)                   # (d,n,nc, dmodel)
+        # generate weighted label embeddings by fusing label embeddings with the generated probabilities
+        # 'probs' contain probabilities which represents the prediction confidence
+        i = torch.LongTensor(range(self.nl)).repeat(d,n,1).to(self.device)  # (d,n,nl)
+        label_embeddings = self.label_embeddings(i)                         # (d,n,nl, ldmodel)
+        label_embeddings = torch.mul(
+            probs.unsqueeze(-1), label_embeddings
+        ).view(d*n, 1, self.nl, self.dmodel)                                # (d,n,nl,ldmodel) => (d*n, 1, nl, ldmodel) (n,c,h,w) 
         
-        # bring the category_embeddings in the form (n,c,h,w) for 2d convolution 
-        # multiply the category embeddings with 'probs' which represents the prediction confidence for each of the category
-        category_embeddings = torch.mul(
-            probs.unsqueeze(-1), category_embeddings
-        ).view(d*n, 1, self.nc, self.dmodel)    # (d*n, 1, nc, dmodel) => (d,n,nc, dmodel)
-
-        word_category_vec = self.conv1(category_embeddings).view(d,n,self.dmodel)       # (d*n, 1, nc, dmodel) => (d*n,1,1,dmodel) => (d,n,dmodel) 
+        # convolve all prediction information into label_vec
+        label_vec = self.conv1(label_embeddings).view(d,n,self.label_dmodel)       # (d*n, 1, nl, ldmodel) => (d*n,1,1,ldmodel) => (d,n,ldmodel) 
         
-        # get the original word embeddings from the BERT engine
-        word_embeddings = self.bert_embeddings(input_ids)    # (d,n,768)
-        #word_embeddings = self.norm2(word_embeddings)
+         
+        # fuse the input word embeddings with prediction information in label_vec
+        gc_vec = torch.concat((word_embeddings, label_vec), dim=-1) # (d,n,dmodel+768)
 
-        # form the wagon vector which is the fusion of the BERT embeddings and the weighted category embeddings 
-        wagon_vec = torch.concat((word_embeddings, word_category_vec), dim=-1) # (d,n,dmodel+768)
+        # feedforward gc_vec through the global corrector module to get the final revised probabilities
+        gc_last_hidden_state = self.gc(gc_vec)                     # (d,n,dmodel+768)
+        gc_last_hidden_state = self.gc_fc(gc_last_hidden_state)    # (d,n,nl)
 
-        # feedforward the wagon vector through the wagon model to get the final revised probabilities
-        wagon_last_hidden_state = self.wagon(wagon_vec)                     # (d,n,dmodel+768)
-        wagon_last_hidden_state = self.wagon_fc(wagon_last_hidden_state)    # (d,n,nc)
-
-        # x -> inf => sigmoid(x) -> 1
-        final_probs = torch.sigmoid(wagon_last_hidden_state)
+        # As x increases, sigmoid(x) tends to 1
+        final_probs = torch.sigmoid(gc_last_hidden_state)
         
         return final_probs
 
 
-    def loss(self, y_hat, y):
+    def calc_metrics(self, y_pred, y):
         """  
         @params:
-        - y_hat    =>  probability tensor outputted by the model (d,n,nc)
-        - y =>  tensor of 1's and 0's representing the actual labels (d,n,nc)
+        - y_pred    =>  probability tensor outputted by the model (d,n,nl)
+        - y =>  tensor of 1's and 0's representing the actual labels (d,n,nl)
         """
-        d,n,nc = y_hat.shape
+        d,n,nl = y.shape
         N = d*n
 
-        epsilon = 1e-10
+        y = y.view(N, nl).float()
+        y_pred = y_pred.view(N,nl).float()
 
-        y = y.view(N, nc)
-        y_hat = y_hat.view(N,nc)
+        tp = torch.mul(y == y_pred, y_pred==1.0).sum(dim=0) # (nl,)
+        tn = torch.mul(y == y_pred, y_pred==0.0).sum(dim=0) # (nl,)
+        fp = torch.mul(y!=y_pred, y_pred==1.0).sum(dim=0)   # (nl,)
+        fn = torch.mul(y!=y_pred, y_pred==0.0).sum(dim=0)   # (nl,)
 
-        # store the number of positive and negative examples for each class in num_positives and num_negatives
+        precision = tp/(tp+fp)  # (nl,)
+        precision = precision.nan_to_num()
+        precision[precision==torch.inf] = 0
+
+        recall = tp/(tp+fn) # (nl,)                     
+        recall = recall.nan_to_num()
+        recall[recall==torch.inf] = 0
+
+        f1_score = 2 / ((1/precision) + (1/recall)) # (nl,)
+
         num_positives = torch.count_nonzero(y, dim=0)
         num_negatives = N - num_positives
 
-        #pos_weights = (num_negatives*100/N).view(1, nc).repeat(N,1) # (N,nc)
-        #neg_weights = (num_positives*100/N).view(1, nc).repeat(N,1) # (N,nc)
+        metrics = collections.OrderedDict({
+            "tp":tp,
+            "tn":tn,
+            "fp":fp,
+            "fn":fn,
+            "num-positives": num_positives,
+            "num-negatives": num_negatives,
+            "precision": precision,
+            "recall": recall,
+            "f1_score": f1_score,
+            
+        })
 
-        #class_weights = torch.log(epsilon + N/(num_positives + epsilon)) + 1  # (nc,)
-        #class_weights = 1 - num_positives/N  # (nc,)
-        #class_weights = class_weights.view(1, nc).repeat(N,1)   # (N,nc)
+        # write the latest calculated metrics to a file
+        with open(os.path.join(self.model_dir, "eval-results.txt"), "w") as fp:
+            fp.write(pretty_print_results(metrics, self.label_names))
 
-        pos_weights = (num_negatives/(num_positives+epsilon)).view(1, nc).repeat(N,1) # (N,nc)
-        neg_weights = (num_positives/(num_negatives+epsilon)).view(1, nc).repeat(N,1) # (N,nc)
+        with open(os.path.join(self.model_dir, "eval-results.csv"), "w") as fp:
+            fp.write(get_csv(metrics, self.label_names))        
 
-        pos_weights = torch.mul(pos_weights, y_hat)
-        neg_weights = torch.mul(neg_weights, 1-y_hat)
-
-        cost = torch.mul(
-            pos_weights,
-            torch.mul(y, torch.log(y_hat + epsilon))
-        ) + torch.mul(
-            neg_weights,
-            torch.mul(1-y, torch.log(1-y_hat + epsilon))
-        )   # (N, nc)
-
-        #cost = torch.mul(class_weights, cost) # (N,nc)
-
-        cost = -torch.sum(cost.view(-1), dim=0)
-        cost = torch.divide(cost, N)*self.loss_amplify_factor
-        return cost
+        return metrics
 
 
-    def dynamic_weighted_bce(self, pred_probs, target_labels):
+    def loss(self, y_pred, y):
         """  
         @params:
-        - pred_probs    =>  probability tensor outputted by the model (d,n,nc)
-        - target_labels =>  tensor of 1's and 0's representing the actual labels (d,n,nc)
+        - y_pred    =>  probability tensor outputted by the model (d,n,nl)
+        - y =>  tensor of 1's and 0's representing the actual labels (d,n,nl)
         """
-        d,n,nc = pred_probs.shape
+        d,n,nl = y.shape
         N = d*n
 
-        epsilon = 1e-10
+        eps = 1e-10
 
-        target_labels = target_labels.view(N, nc)
-        pred_probs = pred_probs.view(N,nc)
+        y = y.view(N, nl)
+        y_pred = y_pred.view(N,nl)
 
-        # store the number of positive and negative examples for each class in num_positives and num_negatives
-        num_positives = torch.count_nonzero(target_labels, dim=0)
+        # number of positive and negative examples for each class
+        num_positives = torch.count_nonzero(y, dim=0)
         num_negatives = N - num_positives
 
-        weights_pos = torch.log(epsilon + torch.max(num_positives)/(num_positives + epsilon)) + 1  # (nc,)
-        weights_pos = weights_pos.view(1, nc).repeat(N,1)   # (N,nc)
-
-        weights_neg = torch.log(epsilon + torch.max(num_negatives)/(num_negatives + epsilon)) + 1  # (nc,)
-        weights_neg = weights_neg.view(1, nc).repeat(N,1)   # (N,nc)
-
-        dynamic_weights_pos = torch.pow(weights_pos, 1-pred_probs)
-        dynamic_weights_neg = torch.pow(weights_neg, pred_probs)
+        pos_weights = (num_negatives/(num_positives+eps)).view(1, nl).repeat(N,1) # (N,nl)
+        neg_weights = (num_positives/(num_negatives+eps)).view(1, nl).repeat(N,1) # (N,nl)
 
         cost = torch.mul(
-            dynamic_weights_pos,
-            torch.mul(target_labels, torch.log(pred_probs + epsilon))
+            torch.mul(pos_weights, y_pred),
+            torch.mul(y, torch.log(y_pred + eps))
         ) + torch.mul(
-            dynamic_weights_neg,
-            torch.mul(1-target_labels, torch.log(1-pred_probs + epsilon))
-        )  # (N, nc)
+            torch.mul(neg_weights, 1-y_pred),
+            torch.mul(1-y, torch.log(1-y_pred + eps))
+        )   # (N, nl)
 
         cost = -torch.sum(cost.view(-1), dim=0)
         cost = torch.divide(cost, N)*self.loss_amplify_factor
         return cost
-        
 
-    def weighted_bce(self, pred_probs, target_labels):
-        """  
-        @params:
-        - pred_probs    =>  probability tensor outputted by the model (d,n,nc)
-        - target_labels =>  tensor of 1's and 0's representing the actual labels (d,n,nc)
-        - p_factor      =>  inversely proportional to the change in the loss for a positive label
-        - n_factor      =>  inversely proportional to the change in the loss for a negative label
-        """
-        d,n,nc = pred_probs.shape
-        N = d*n
 
-        # store the number of positive and negative examples for each class in num_positives and num_negatives
-        num_positives = [-1]*nc
-        for i in range(nc):
-            num_positives[i] = torch.count_nonzero(target_labels[:,:,i]==1).item()
-
-        num_negatives = [N - num_positives[i] for i in range(nc)]
-
-        # each class has a p_weight and n_weight
-        # p_weight amount of ylogy and n_weight amount of (1-y)log(1-y) is added to the loss
-        p_weights = torch.FloatTensor([N/(self.p_factor * num_positives[i] + 0.001) for i in range(nc)]).unsqueeze(dim=-1).to(self.device) # (nc, 1)
-        n_weights = torch.FloatTensor([N/(self.n_factor * num_negatives[i] + 0.001) for i in range(nc)]).unsqueeze(dim=-1).to(self.device) # (nc, 1)
-
-        # calculate bce loss as p_weight * ylogy + n_weight * (1-y)log(1-y)
-        # remember, if pred_probs is 1 => log(1-pred_probs) will be -inf which will further give cost as Nan values
-        cost = torch.matmul(
-            torch.mul( 
-                target_labels, 
-                torch.log(pred_probs) 
-            ),
-            p_weights
-        ) + torch.matmul(
-            torch.mul( 
-                1 - target_labels, 
-                torch.log(1 - pred_probs) 
-            ),
-            n_weights
-        )
-           
-        cost = -torch.sum(cost.view(-1), dim=0)
-        cost = torch.divide(cost, N)*self.loss_amplify_factor
-
-        return cost
-
-    
-    def test(self, test_loader, thresholds):
+    def test(self, test_loader):
 
         with torch.no_grad():
 
-            predictions = []
-            target_labels = []
-        
-            for _, (batch_input_ids, batch_target_labels) in enumerate(test_loader):
+            y_pred = []
+            y = []
 
-                batch_input_ids = batch_input_ids.to(self.device)
-                batch_target_labels = batch_target_labels.to(self.device)
+            for _, (batch_x, batch_y) in enumerate(test_loader):
+                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
 
-                # calc output probabilities for each batch input
-                probs = self(batch_input_ids)  # (d,n,nc)
+                probs = self(batch_x)
 
-                # store the batch probabilities and batch target labels for calculating metrics over the entire test set
-                predictions.append(probs)
-                target_labels.append(batch_target_labels)
+                y_pred.append(probs.tolist())
+                y.append(batch_y.tolist())
 
-            # concatenate all batch outputs
-            target_labels = torch.concat(target_labels, dim=0)
-            predictions = torch.concat(predictions, dim=0)
+            y_pred = torch.FloatTensor(y_pred)
+            y = torch.FloatTensor(y)
 
-            # calculate metrics for the entire test set
-            self.metrics.calc_metrics(target_labels, predictions, thresholds)
+            thresholded_y_pred = y_pred.clone()
+            thresholded_y_pred[thresholded_y_pred >= 0.5] = 1
+            thresholded_y_pred[thresholded_y_pred < 0.5] = 0
 
-            return self.loss(predictions, target_labels).item()
+            _ = self.calc_metrics(thresholded_y_pred, y)
 
- 
+            return self.loss(y_pred, y).item()
+
+
     def train(self, train_loader, test_loader,  num_epochs=10):
 
         self.optimizer = optim.Adam(self.parameters(), lr=self.lr)
@@ -314,13 +269,11 @@ class GENIAModel(nn.Module):
             threshold=0.0001, 
             threshold_mode='abs'
         )
-        #self.scheduler = optim.lr_scheduler.CyclicLR(self.optimizer, base_lr=0.01, max_lr=0.1, cycle_momentum=False)
+        
         progress_bar = tqdm(range(num_epochs), position=0, leave=True)
 
-        # train_loss and test_loss represents the loss over the entire training set and test set after each epoch
-        train_loss = 0.0
-        test_loss = 0.0
-        
+        avg_train_loss = 0.0    # loss over entire train set at each epoch
+        avg_test_loss = 0.0     # loss over entire test set at each epoch
         num_batches = len(train_loader)
 
         for epoch in progress_bar:
@@ -331,102 +284,95 @@ class GENIAModel(nn.Module):
             # aggregate all batch losses in epoch_loss
             epoch_loss = 0.0
 
-            for step, (input_ids, target_labels) in enumerate(train_loader):
+            for step, (batch_x, batch_y) in enumerate(train_loader):
                 
-                input_ids = input_ids.to(self.device)
-                target_labels = target_labels.to(self.device)
+                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
 
                 # clear gradients
                 self.optimizer.zero_grad()
 
                 # forward and backward pass
-                probs = self(input_ids)
+                probs = self(x)
 
-                batch_loss = self.loss(probs, target_labels)
-                batch_loss.backward()
+                single_batch_loss = self.loss(probs, batch_y)
+                single_batch_loss.backward()
                 
                 torch.nn.utils.clip_grad_norm_(self.parameters(), 2)
                 self.optimizer.step()
 
-                epoch_loss += batch_loss.detach().item()
+                epoch_loss += single_batch_loss.detach().item()
                 progress_bar.set_postfix(
                     {
                         "batch":step,
-                        "batch-loss": str(round(batch_loss.detach().item(),4)),
-                        "train-loss": str(round(train_loss,4)),
-                        "test-loss": str(round(test_loss,4))
+                        "batch-loss": str(round(single_batch_loss.detach().item(),4)),
+                        "train-loss": str(round(avg_train_loss,4)),
+                        "test-loss": str(round(avg_test_loss,4))
                     }
                 )
 
                 # collect all batch outputs for evaluation
-                y_pred.append(probs)
-                y.append(target_labels)
+                y_pred.append(probs.tolist())
+                y.append(batch_y.tolist())
             
             # calculate optimal threshold for each class based on the predictions and true labels of entire training set
-            y_pred = torch.concat(y_pred, dim=0).to(self.device)
-            y = torch.concat(y, dim=0).to(self.device)
+            y_pred = torch.FloatTensor(y_pred)
+            y = torch.FloatTensor(y)
 
-            d,n,nc = y_pred.shape
+            d,n,nl = y_pred.shape
             N = d*n
             y = y.view(N, nc)
-            y_pred = y_pred.view(N,nc)
-
-            # store the number of positive and negative examples for each class in num_positives and num_negatives
-            #num_positives = torch.count_nonzero(y, dim=0)   # (nc, )
-            #num_negatives = N - num_positives               # (nc, )
-
-            #thresholds = num_positives/N
-            #thresholds = torch.minimum(num_positives, num_negatives)/torch.maximum(num_positives, num_negatives)
-            thresholds = self.metrics.get_optimal_threshold(y_pred, y).to(self.device)
+            y_pred = y_pred.view(N,nl)
 
             self.scheduler.step(epoch_loss)
             
-            # calculate test loss and all metrics
-            test_loss = self.test(test_loader, thresholds)
+            test_loss = self.test(test_loader)
             train_loss = epoch_loss/num_batches
-
-            self.metrics.record("train-loss", train_loss)
-            self.metrics.record("test-loss", test_loss)
+            self.logger.write_log({"train-losses": train_loss, "test-loss": test_loss})
 
             progress_bar.set_postfix(
                 {
                     "batch":step,
-                    "batch-loss": str(round(batch_loss.detach().item(),4)),
+                    "batch-loss": str(round(single_batch_loss.detach().item(),4)),
                     "train-loss": str(round(train_loss,4)),
                     "test-loss": str(round(test_loss,4))
                 }
             )
 
             # save model after every epoch
-            torch.save(self.state_dict(), os.path.join(self.save_path, self.model_name))
+            torch.save(self.state_dict(), os.path.join(self.model_dir, self.model_name))
         
-        self.metrics.write_metrics()
+        self.plot_train_test_loss_curve()
+        self.plot_model_probs_histogram(y_pred)
 
-        # write the latest calculated metrics to a file
-        with open(os.path.join(self.save_path, "eval-results.txt"), "w") as fp:
-            fp.write(self.metrics.pretty_print_results())
+        return train_loss, test_loss
 
-        with open(os.path.join(self.save_path, "eval-results.csv"), "w") as fp:
-            fp.write(self.metrics.get_csv())
 
-        # save the model probabilities as a pickle file
-        with open(os.path.join(self.save_path, "model-probs.tensor"), "wb") as fp:
-            dump(y_pred, fp)
+    def plot_model_probs_histogram(self, y_pred):
+        y_pred = y_pred.view(-1).cpu().tolist()
+        plt.hist(y_pred, bins=20, range=(0,1))
+        plot_path = os.path.join(self.model_dir, "model-probs-hist.png")
+        if os.path.exists(plot_path):
+            os.remove(plot_path)
+        plt.savefig(plot_path)
+        plt.close()
 
-        # save the dataset target labels as a pickle file
-        with open(os.path.join(self.save_path, "dataset-labels.tensor"), "wb") as fp:
-            dump(y, fp)
-
-        train_losses = self.metrics.metric_file["train-loss"]
-        test_losses = self.metrics.metric_file["test-loss"]
+    
+    def plot_train_test_loss_curve(self):
+        log = self.logger.read_log()
+        train_losses = log["train-losses"]
+        test_losses = log["test-losses"]
         epochs = list(range(len(train_losses)))
 
         plt.plot(epochs, train_losses, "-b", label="Training loss")
         plt.plot(epochs, test_losses, "-r", label="Test loss")
         plt.legend(loc="upper right")
-        plt.savefig("losses.png")
 
-        return train_loss, test_loss
+        plot_path = os.path.join(self.model_dir, "losses.png")
+        if os.path.exists(plot_path):
+            os.remove(plot_path)
+        plt.savefig(plot_path)
+        plt.close()
+
 
 
 if __name__ == "__main__":

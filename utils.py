@@ -1,3 +1,37 @@
+def get_csv(metrics, class_names):
+    file = f"metric,{','.join(class_names)}"
+    for metric, vals in metrics.items():
+        file += f"\n{metric},"
+        if type(vals)==list:
+            file += f"{','.join([str(val) for val in vals])}"
+        else:
+            file += f"{vals}"
+    return file
+    
+        
+def pretty_print_results(metrics, class_names):
+    nl = len(class_names)
+    if metrics:
+        headers = ['metric',] + class_names
+        
+        dataset = []
+        for key, val in metrics.items():
+            if type(val) == list and len(val)==nl:
+                dataset += [[key]+val]
+            else:
+                dataset += [[key]+[val]+[0,]*(nl-1)]
+
+        file = PrettyPrint.get_tabular_formatted_string(
+                    dataset=dataset, 
+                    headers=headers,
+                    include_serial_numbers=False,
+                    table_header="Evaluation metrics",
+                    partitions=[5,9]
+                )
+        return file
+    return None
+
+
 
 class PrettyPrint():
 

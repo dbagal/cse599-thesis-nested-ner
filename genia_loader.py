@@ -1,8 +1,9 @@
 from tqdm import tqdm  
 from torch.utils.data import Dataset
-import os, re, sys
 import torch
 from bert_tokenizer import BERTTokenizer
+
+# Dataset: https://github.com/thecharm/boundary-aware-nested-ner/tree/master/Our_boundary-aware_model/data
 
 
 class GENIADataset(Dataset):

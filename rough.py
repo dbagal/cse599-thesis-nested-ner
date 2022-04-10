@@ -1,25 +1,26 @@
-content = """IL      B-DNA   O       O       O
--       I-DNA   O       O       O
-2       I-DNA   O       O       O
-gene    I-DNA   O       O       O
-expression      O       O       O       O
-and     O       O       O       O
-NF      B-protein       O       O       O
--       I-protein       O       O       O
-kappa   I-protein       O       O       O
-B       I-protein       O       O       O
-activation      O       O       O       O
-through O       O       O       O
-CD28    B-protein       O       O       O
-requires        O       O       O       O
-reactive        O       O       O       O
-oxygen  O       O       O       O
-production      O       O       O       O
-by      O       O       O       O
-5       B-protein       O       O       O
--       I-protein       O       O       O
-lipoxygenase    I-protein       O       O       O
-.       O       O       O       O"""
+import torch
 
-content = [line.split("\t") for line in content.split("\n")]
-print(content)
+y =[
+    [1,1,0,1,0,1],
+    [1,1,1,1,1,1],
+    [0,0,1,0,1,1],
+    [1,0,1,0,1,1]
+]
+y = [y,y,y,y]
+
+ypred = [
+    [1,1,0,0,0,0],
+    [0,0,1,1,1,1],
+    [1,1,0,0,1,0],
+    [0,0,0,0,1,1]
+]
+ypred = [ypred, ypred, ypred, ypred]
+
+y = torch.FloatTensor(y)
+ypred = torch.FloatTensor(ypred)
+tp = torch.mul(y == ypred, ypred==1.0).sum(dim=0)
+tn = torch.mul(y == ypred, ypred==0.0).sum(dim=0)
+fp = torch.mul(y!=ypred, ypred==1.0).sum(dim=0)
+fn = torch.mul(y!=ypred, ypred==0.0).sum(dim=0)
+
+print(tn)
