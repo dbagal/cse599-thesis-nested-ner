@@ -11,6 +11,7 @@ from utils import *
 import matplotlib.pyplot as plt
 
 
+
 class Logger:
     def __init__(self, log_dir) -> None:
         self.log_dir = log_dir
@@ -18,6 +19,7 @@ class Logger:
 
     
     def read_log(self):
+        # return the contents of the log file
         try:
             with open(self.log_path, "r") as fp:
                 file = json.load(fp)
@@ -27,11 +29,17 @@ class Logger:
 
 
     def write_log(self, new_logs:dict, replace:dict):
+
+        # read the current log file
         log = self.read_log()
 
-        for k,v in new_logs:
+        for k,v in new_logs.items():
+
+            # key already exists and value shouldn't be replaced
             if k in log and not replace[k]:
                 log[k].append(v)
+
+            # new key, but not replaceable => use list
             elif k not in log and not replace[k]:
                 log[k] = [v]
             else:
@@ -45,18 +53,19 @@ class Logger:
 class GENIAModel(nn.Module):
 
     def __init__(self, num_labels=11) -> None:
+        super(GENIAModel, self).__init__()
 
         self.device = "cuda"
         self.model_dir = os.getcwd()
         self.model_name = "genia-model-v1.pt"
-        self.nl = num_labels
-        self.label_dmodel = 64
         self.lr = 0.01
         self.loss_amplify_factor = 10000
         self.lr_adaptive_factor = 0.5
         self.lr_patience = 5
         self.logger = Logger(self.model_dir)
 
+        self.nl = num_labels
+        self.label_dmodel = 64
         self.label_names = ['O','B-cell_type', 'I-cell_type', 'B-RNA', 'I-RNA', 'B-DNA', 'I-DNA', 
         'B-cell_line', 'I-cell_line', 'B-protein', 'I-protein']
 
@@ -102,7 +111,6 @@ class GENIAModel(nn.Module):
     def load(self):
         model_path = os.path.join(self.model_dir, self.model_name)
         self.load_state_dict(torch.load(model_path, map_location=self.device))
-        #self.eval()
 
 
     def forward(self, x):
@@ -116,21 +124,20 @@ class GENIAModel(nn.Module):
         # get the local-view probabilities for the ner task using the engine module
         word_embeddings = self.bert_embeddings(x)     # (d,n,768)
         state = self.engine(word_embeddings)          # (d,n,768)
-        state = self.engine_fc(state)       # (d,n,nl)
-        probs = torch.sigmoid(state)        # (d,n,nl)
+        state = self.engine_fc(state)                 # (d,n,nl)
+        probs = torch.sigmoid(state)                  # (d,n,nl)
 
         # generate weighted label embeddings by fusing label embeddings with the generated probabilities
-        # 'probs' contain probabilities which represents the prediction confidence
+        # 'probs' contain probabilities which represent the prediction confidence
         i = torch.LongTensor(range(self.nl)).repeat(d,n,1).to(self.device)  # (d,n,nl)
         label_embeddings = self.label_embeddings(i)                         # (d,n,nl, ldmodel)
         label_embeddings = torch.mul(
             probs.unsqueeze(-1), label_embeddings
-        ).view(d*n, 1, self.nl, self.dmodel)                                # (d,n,nl,ldmodel) => (d*n, 1, nl, ldmodel) (n,c,h,w) 
+        ).view(d*n, 1, self.nl, self.label_dmodel)                                # (d,n,nl,ldmodel) => (d*n, 1, nl, ldmodel) (n,c,h,w) 
         
         # convolve all prediction information into label_vec
         label_vec = self.conv1(label_embeddings).view(d,n,self.label_dmodel)       # (d*n, 1, nl, ldmodel) => (d*n,1,1,ldmodel) => (d,n,ldmodel) 
         
-         
         # fuse the input word embeddings with prediction information in label_vec
         gc_vec = torch.concat((word_embeddings, label_vec), dim=-1) # (d,n,dmodel+768)
 
@@ -175,15 +182,15 @@ class GENIAModel(nn.Module):
         num_negatives = N - num_positives
 
         metrics = collections.OrderedDict({
-            "tp":tp,
-            "tn":tn,
-            "fp":fp,
-            "fn":fn,
-            "num-positives": num_positives,
-            "num-negatives": num_negatives,
-            "precision": precision,
-            "recall": recall,
-            "f1_score": f1_score,
+            "tp":tp.tolist(),
+            "tn":tn.tolist(),
+            "fp":fp.tolist(),
+            "fn":fn.tolist(),
+            "num-positives": num_positives.tolist(),
+            "num-negatives": num_negatives.tolist(),
+            "precision": precision.tolist(),
+            "recall": recall.tolist(),
+            "f1_score": f1_score.tolist(),
             
         })
 
@@ -239,15 +246,15 @@ class GENIAModel(nn.Module):
             y = []
 
             for _, (batch_x, batch_y) in enumerate(test_loader):
-                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
 
+                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
                 probs = self(batch_x)
 
-                y_pred.append(probs.tolist())
-                y.append(batch_y.tolist())
+                y_pred.append(probs)
+                y.append(batch_y)
 
-            y_pred = torch.FloatTensor(y_pred)
-            y = torch.FloatTensor(y)
+            y_pred = torch.concat(y_pred, dim=0)
+            y = torch.concat(y, dim=0)
 
             thresholded_y_pred = y_pred.clone()
             thresholded_y_pred[thresholded_y_pred >= 0.5] = 1
@@ -285,18 +292,19 @@ class GENIAModel(nn.Module):
             epoch_loss = 0.0
 
             for step, (batch_x, batch_y) in enumerate(train_loader):
-                
+
                 batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
 
                 # clear gradients
                 self.optimizer.zero_grad()
 
                 # forward and backward pass
-                probs = self(x)
+                probs = self(batch_x)
 
                 single_batch_loss = self.loss(probs, batch_y)
                 single_batch_loss.backward()
                 
+                # clip gradients and update weights
                 torch.nn.utils.clip_grad_norm_(self.parameters(), 2)
                 self.optimizer.step()
 
@@ -311,30 +319,33 @@ class GENIAModel(nn.Module):
                 )
 
                 # collect all batch outputs for evaluation
-                y_pred.append(probs.tolist())
-                y.append(batch_y.tolist())
+                y_pred.append(probs)
+                y.append(batch_y)
             
-            # calculate optimal threshold for each class based on the predictions and true labels of entire training set
-            y_pred = torch.FloatTensor(y_pred)
-            y = torch.FloatTensor(y)
-
+            y_pred = torch.concat(y_pred, dim=0)
+            y = torch.concat(y, dim=0)
+            
             d,n,nl = y_pred.shape
             N = d*n
-            y = y.view(N, nc)
+            y = y.view(N, nl)
             y_pred = y_pred.view(N,nl)
 
+            # adjust learning rate
             self.scheduler.step(epoch_loss)
             
-            test_loss = self.test(test_loader)
-            train_loss = epoch_loss/num_batches
-            self.logger.write_log({"train-losses": train_loss, "test-loss": test_loss})
+            avg_test_loss = self.test(test_loader)
+            avg_train_loss = epoch_loss/num_batches
+            self.logger.write_log(
+                {"train-losses": avg_train_loss, "test-losses": avg_test_loss}, 
+                replace={"train-losses":False, "test-losses":False}
+            )
 
             progress_bar.set_postfix(
                 {
                     "batch":step,
                     "batch-loss": str(round(single_batch_loss.detach().item(),4)),
-                    "train-loss": str(round(train_loss,4)),
-                    "test-loss": str(round(test_loss,4))
+                    "train-loss": str(round(avg_train_loss,4)),
+                    "test-loss": str(round(avg_test_loss,4))
                 }
             )
 
@@ -344,7 +355,7 @@ class GENIAModel(nn.Module):
         self.plot_train_test_loss_curve()
         self.plot_model_probs_histogram(y_pred)
 
-        return train_loss, test_loss
+        return avg_train_loss, avg_test_loss
 
 
     def plot_model_probs_histogram(self, y_pred):

@@ -25,8 +25,8 @@ with open(os.path.join(os.getcwd(), "train-config.json"), "r") as fp:
 batch_size = config["batch-size"]
 main_folder = config["main-folder"]
 
-train_file = config["train-file"]
-test_file = config["test-file"]
+train_file = os.path.join(main_folder, config["train-file"])
+test_file = os.path.join(main_folder, config["test-file"])
 
 device="cuda"
 tokenizer = BERTTokenizer()
@@ -65,24 +65,19 @@ print(f"Labels batch shape: {test_labels.size()}") # batch_size, max_sent_len, n
 print(f"\nTraining batches: {len(train_loader)}")
 print(f"Test batches: {len(test_loader)}")
 
-""" 
-model = GENIAModel(main_folder)
-#model.cuda()
-#model.load()
 
-#model.p_factor = 0.7
-#model.n_factor = 2
+model = GENIAModel()
+model.cuda()
+#model.load()
 model.lr = 0.01
 model.loss_amplify_factor = 100000000
 model.lr_adaptive_factor = 0.5
 model.lr_patience = 3
-#model.train(train_loader, test_loader, num_epochs=20)
-#print(f"Learning rate: {model.optimizer.param_groups[0]['lr']}")
+
 
 for i in range(1):
     # first things first, backup the working model
     try:
-        os.system("rm losses.png")
         os.system("cp /nestedner/genia-model-v1.pt /nestedner/genia-model-v1-copy.pt")
     except:
         print("Backing up process failed")
@@ -95,4 +90,4 @@ for i in range(1):
     # if losses are nan, we can do error analysis and restart with the already backed-up working model
     if torch.isnan(torch.tensor(train_loss)) or torch.isnan(torch.tensor(test_loss)):
         break
-     """
+    
